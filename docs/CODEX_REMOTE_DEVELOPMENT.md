@@ -11,6 +11,7 @@
 - Codex 通道：后端通过 stdio JSON-RPC/JSONL 向 app-server 发送 thread/turn 请求，并持续读取 stdout 通知；不解析终端界面文字，不轮询，不为每条用户消息重启 Codex。
 - 浏览器实时通道：WebSocket。收到 `item/agentMessage/delta` 后立即推送到网页并追加到正在显示的助手消息；`turn/completed` 等事件同步运行状态。
 - 会话历史：通过 Codex 原生 `thread/list`、`thread/read`、`thread/resume` 管理，不另存一份内容副本。
+- 外部会话同步：监听本机 Codex `sessions` 目录的 JSONL 文件变化，通过 WebSocket 通知前端刷新对话列表；消息流仍使用 App Server 的增量通知。
 - 远程入口：Vite 的显式 LAN 启动仅暴露网页服务；引擎默认只绑定 loopback，Codex app-server 只使用 stdio。使用配对码保护 API 和 WebSocket。
 
 ## 页面范围
