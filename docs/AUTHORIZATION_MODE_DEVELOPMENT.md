@@ -10,15 +10,15 @@
 
 - `thread/start` 和 `turn/start` 支持 `approvalPolicy`。
 - 当前本机 App Server 返回的枚举为 `on-request`、`untrusted`、`never`；网页必须使用这组连字符值。
-- `turn/start.sandboxPolicy.type` 支持 `workspaceWrite` 和 `dangerFullAccess`。
+- `thread/start.sandbox` 与 `turn/start.sandboxPolicy.type` 支持 `workspace-write` 和 `danger-full-access`。
 
 网页选项映射如下：
 
 | 网页选项 | approvalPolicy | sandboxPolicy |
 | --- | --- | --- |
-| 请求批准 | `on-request` | `workspaceWrite` |
-| 帮我批准 | `untrusted` | `workspaceWrite` |
-| 完全访问权限 | `never` | `dangerFullAccess` |
+| 请求批准 | `on-request` | `workspace-write` |
+| 帮我批准 | `untrusted` | `workspace-write` |
+| 完全访问权限 | `never` | `danger-full-access` |
 
 ## 实施步骤
 
@@ -31,6 +31,6 @@
 
 - 输入框能选择三种授权模式，当前模式显示在工具栏。
 - 新建线程和后续 turn 都使用当前授权模式。
-- 选择“完全访问权限”时同时使用 `never` 与 `dangerFullAccess`。
+- 选择“完全访问权限”时同时使用 `never` 与 `danger-full-access`。
 - 授权卡片左右边缘与输入框对齐，桌面和手机布局均不偏移。
 - `pnpm --filter codex-remote build` 成功，`git diff --check` 无输出。
