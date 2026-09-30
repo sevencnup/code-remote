@@ -9,15 +9,15 @@
 依据 OpenAI 官方 [Codex App Server 文档](https://developers.openai.com/codex/app-server/)：
 
 - `thread/start` 和 `turn/start` 支持 `approvalPolicy`。
-- `approvalPolicy` 使用 `onRequest`、`unlessTrusted`、`never`。
+- 当前本机 App Server 返回的枚举为 `on-request`、`untrusted`、`never`；网页必须使用这组连字符值。
 - `turn/start.sandboxPolicy.type` 支持 `workspaceWrite` 和 `dangerFullAccess`。
 
 网页选项映射如下：
 
 | 网页选项 | approvalPolicy | sandboxPolicy |
 | --- | --- | --- |
-| 请求批准 | `onRequest` | `workspaceWrite` |
-| 帮我批准 | `unlessTrusted` | `workspaceWrite` |
+| 请求批准 | `on-request` | `workspaceWrite` |
+| 帮我批准 | `untrusted` | `workspaceWrite` |
 | 完全访问权限 | `never` | `dangerFullAccess` |
 
 ## 实施步骤
