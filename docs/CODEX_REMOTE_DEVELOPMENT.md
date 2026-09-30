@@ -12,6 +12,7 @@
 - 浏览器实时通道：WebSocket。收到 `item/agentMessage/delta` 后立即推送到网页并追加到正在显示的助手消息；`turn/completed` 等事件同步运行状态。
 - 回复中的活动状态：根据 App Server 的 turn/item 通知，在回复旁动态显示思考、执行命令、修改文件、调用工具或生成回复等安全摘要；不向用户展示原始 reasoning 内容。
 - 会话历史：通过 Codex 原生 `thread/list`、`thread/read`、`thread/resume` 管理，不另存一份内容副本。
+- 对话列表按 thread ID 去重；App Server 为同一 thread 返回多个记录时，仅显示更新时间最新的一条，不按标题合并不同对话。
 - 发送前确认当前 thread 已在 App Server 中恢复；切换/恢复历史记录期间禁用发送，避免对尚未加载的 thread 发起 turn。
 - 若 App Server 返回 thread 已有 active writer，将该 thread 标记为运行中并禁止重复发送；通过 turn 通知或会话文件变化刷新到完成状态。
 - 外部会话同步：监听本机 Codex `sessions` 目录的 JSONL 文件变化，通过 WebSocket 通知前端刷新对话列表；消息流仍使用 App Server 的增量通知。
@@ -23,6 +24,7 @@
 - 主页面：工作目录与连接状态、对话消息、流式状态、审批卡片、输入框和停止操作。
 - Codex 处理期间，根据当前 App Server 活动动态更新状态文案；收到回复 delta 后显示“正在回复”，turn 结束或切换会话时清除状态。
 - 恢复对话期间禁用输入和发送；若本机已不存在该 thread，保留草稿并提示用户改用新对话。
+- 侧边栏每个 thread ID 只显示一次，避免 App Server 的重复列表记录造成重复项。
 - 遇到 active writer 时显示运行状态，等待原 turn 完成后再发送，避免重复启动同一 thread。
 - 移动端：侧栏通过按钮打开/关闭，聊天页面填满屏幕。
 - 本项目不实现代码编辑器、文件树、终端、模型设置、Agent 编排或飞书机器人。
@@ -44,6 +46,7 @@
 - 回复增量通过后端 WebSocket 推送，前端收到 delta 后立即更新，不依赖轮询。
 - Codex 回复期间显示当前操作类型，并随 App Server 通知实时切换；不泄露 reasoning 文本。
 - 历史 thread 恢复期间不能启动 turn；App Server 重连后发送前重新恢复 thread。
+- 同一个 thread ID 在列表中只保留最新记录，标题相同但 ID 不同的对话保持独立。
 - 已有活动 writer 的 thread 不会收到第二个 turn；活动结束后状态会自动恢复可发送。
 - 手机屏幕可以打开对话列表、切换对话、输入消息、看到流式回复并处理批准/拒绝提示。
 - Codex 不存在、连接断开或请求失败时显示可读状态。
