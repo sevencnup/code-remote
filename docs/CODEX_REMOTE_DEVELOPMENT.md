@@ -16,6 +16,8 @@
 - 打开历史对话时先通过 `thread/read` 只读加载内容；仅在发送时恢复 writer，避免因其他 Codex 实例占用而无法查看历史。
 - 网页首次打开停留在“新对话”，不会自动选中本机最近的历史 thread；用户首次发送时由网页创建独占的远程 thread，确保可立即对话。
 - 发送前确认当前 thread 已在 App Server 中恢复；切换/恢复历史记录期间禁用发送，避免对尚未加载的 thread 发起 turn。
+- 模型选项从本机 Codex 的 `model/list` 动态加载；下一条消息可携带选中的模型。
+- 网页可附加 PNG、JPEG、WebP、GIF 图片并经本机临时路径传给 Codex；图片不通过局域网 URL 公开。
 - 若 App Server 返回 thread 已有 active writer，将该 thread 标记为运行中并禁止重复发送；通过 turn 通知或会话文件变化刷新到完成状态。
 - 外部会话同步：监听本机 Codex `sessions` 目录的 JSONL 文件变化，通过 WebSocket 通知前端刷新对话列表；消息流仍使用 App Server 的增量通知。
 - 远程入口：Vite 的显式 LAN 启动仅暴露网页服务；引擎默认只绑定 loopback，Codex app-server 只使用 stdio。使用配对码保护 API 和 WebSocket。
@@ -54,6 +56,8 @@
 - 已有活动 writer 的 thread 不会收到第二个 turn；活动结束后状态会自动恢复可发送。
 - 有活动 writer 的历史 thread 能正常打开和查看，不能写入时不显示 App Server 原始错误。
 - 首次打开网页可以直接输入消息并创建远程独占的 thread，不会因本机正在使用最近一条历史而无法开始对话。
+- 用户消息显示在右侧的深色边框气泡中；无回复时的活动状态与助手消息正文左边缘对齐。
+- 支持从当前账户可用模型中选择，并向支持图片输入的模型发送文字和图片。
 - 手机屏幕可以打开对话列表、切换对话、输入消息、看到流式回复并处理批准/拒绝提示。
 - Codex 不存在、连接断开或请求失败时显示可读状态。
 - API/WS 需要本机启动时生成的配对码；Codex app-server 不对网络开放。
