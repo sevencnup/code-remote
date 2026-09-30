@@ -13,6 +13,7 @@
 - 回复中的活动状态：根据 App Server 的 turn/item 通知，在回复旁动态显示思考、执行命令、修改文件、调用工具或生成回复等安全摘要；不向用户展示原始 reasoning 内容。
 - 会话历史：通过 Codex 原生 `thread/list`、`thread/read`、`thread/resume` 管理，不另存一份内容副本。
 - 对话列表按 thread ID 去重；App Server 为同一 thread 返回多个记录时，仅显示更新时间最新的一条，不按标题合并不同对话。
+- 打开历史对话时先通过 `thread/read` 只读加载内容；仅在发送时恢复 writer，避免因其他 Codex 实例占用而无法查看历史。
 - 发送前确认当前 thread 已在 App Server 中恢复；切换/恢复历史记录期间禁用发送，避免对尚未加载的 thread 发起 turn。
 - 若 App Server 返回 thread 已有 active writer，将该 thread 标记为运行中并禁止重复发送；通过 turn 通知或会话文件变化刷新到完成状态。
 - 外部会话同步：监听本机 Codex `sessions` 目录的 JSONL 文件变化，通过 WebSocket 通知前端刷新对话列表；消息流仍使用 App Server 的增量通知。
@@ -26,6 +27,7 @@
 - 恢复对话期间禁用输入和发送；若本机已不存在该 thread，保留草稿并提示用户改用新对话。
 - 侧边栏每个 thread ID 只显示一次，避免 App Server 的重复列表记录造成重复项。
 - 遇到 active writer 时显示运行状态，等待原 turn 完成后再发送，避免重复启动同一 thread。
+- 被其他 Codex 实例占用的对话仍可查看历史；发送时显示中文占用说明，并保留草稿。
 - 移动端：侧栏通过按钮打开/关闭，聊天页面填满屏幕。
 - 本项目不实现代码编辑器、文件树、终端、模型设置、Agent 编排或飞书机器人。
 
@@ -48,6 +50,7 @@
 - 历史 thread 恢复期间不能启动 turn；App Server 重连后发送前重新恢复 thread。
 - 同一个 thread ID 在列表中只保留最新记录，标题相同但 ID 不同的对话保持独立。
 - 已有活动 writer 的 thread 不会收到第二个 turn；活动结束后状态会自动恢复可发送。
+- 有活动 writer 的历史 thread 能正常打开和查看，不能写入时不显示 App Server 原始错误。
 - 手机屏幕可以打开对话列表、切换对话、输入消息、看到流式回复并处理批准/拒绝提示。
 - Codex 不存在、连接断开或请求失败时显示可读状态。
 - API/WS 需要本机启动时生成的配对码；Codex app-server 不对网络开放。
