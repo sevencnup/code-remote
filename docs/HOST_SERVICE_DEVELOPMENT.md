@@ -8,7 +8,7 @@
 
 1. 新增 systemd 服务配置，工作目录固定为 `/code`。
 2. 由 `/usr/local/bin/node /code/codex-remote/scripts/dev.mjs` 直接启动 Python 引擎和 Vite 前端，避免 systemd 启动时触发 workspace 依赖安装。
-3. 配置 `HOME=/root` 和 `CODEX_REMOTE_WORKSPACE=/code/codex-remote`，复用宿主机 Codex 登录状态和工作目录。
+3. 加载宿主机 `/etc/environment` 中已有的 Codex 凭据变量，再配置 `HOME=/root` 和 `CODEX_REMOTE_WORKSPACE=/code/codex-remote`，复用宿主机 Codex 登录状态和工作目录。
 4. 设置异常自动重启，并通过 `KillMode=control-group` 一并回收子进程。
 5. 启动服务后检查 `4173` 网页端口、`18766` 引擎健康接口和外部地址。
 

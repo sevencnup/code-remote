@@ -6,7 +6,7 @@
 
 ## 实施步骤
 
-1. 使用宿主机实际存在的 Node 和 Codex CLI 路径，修正 systemd unit 的启动环境。
+1. 使用宿主机实际存在的 Node 和 Codex CLI 路径，并加载 `/etc/environment` 中已有的 Codex 凭据变量，修正 systemd unit 的启动环境。
 2. 停止手动启动的旧 Vite 进程，避免与常驻服务争用 `4173` 端口。
 3. 安装并启用 `codex-remote.service`，直接运行 `scripts/dev.mjs`，同时管理 Python 引擎和 Vite 前端。
 4. 检查 systemd 状态、网页端口、引擎健康接口和局域网访问地址。
