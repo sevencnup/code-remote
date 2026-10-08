@@ -7,7 +7,7 @@
 ## 开发步骤
 
 1. 新增 systemd 服务配置，工作目录固定为 `/code`。
-2. 由 `/usr/bin/pnpm --filter codex-remote dev` 同时启动 Python 引擎和 Vite 前端。
+2. 由 `/usr/local/bin/node /code/codex-remote/scripts/dev.mjs` 直接启动 Python 引擎和 Vite 前端，避免 systemd 启动时触发 workspace 依赖安装。
 3. 配置 `HOME=/root` 和 `CODEX_REMOTE_WORKSPACE=/code/codex-remote`，复用宿主机 Codex 登录状态和工作目录。
 4. 设置异常自动重启，并通过 `KillMode=control-group` 一并回收子进程。
 5. 启动服务后检查 `4173` 网页端口、`18766` 引擎健康接口和外部地址。
@@ -18,6 +18,7 @@
 - `http://127.0.0.1:4173/` 返回 HTTP 200。
 - `http://127.0.0.1:18766/health` 返回 `{"status":"ready"}`。
 - 内网或公网地址可以打开网页并完成配对。
+- 后台运行时通过 `journalctl -u codex-remote.service` 查看配对码和服务日志。
 
 ## 回滚
 
