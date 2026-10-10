@@ -16,7 +16,7 @@
 ## 实施步骤
 
 1. 将 `highlight.js` 声明为项目依赖，复用共享 store 中已有版本；不在项目目录内单独安装依赖。
-2. 新增文件名/扩展名到语言的映射和轻量语言注册，支持 Windows 批处理、JavaScript/TypeScript、JSON、Python、Shell、HTML/XML、CSS、Java/Kotlin/Groovy/Gradle、C/C++/C#、Go、Rust、PowerShell、YAML、SQL 等常见类型。
+2. 新增文件名/扩展名到语言的映射和轻量语言注册，支持 Windows 批处理、JavaScript/TypeScript、Markdown、JSON、Python、Shell、HTML/XML、CSS、Java/Kotlin/Groovy/Gradle、C/C++/C#、Go、Rust、PowerShell、YAML、SQL 等常见类型。
 3. 将高亮结果安全转换成逐行 React token，保持换行、空行、原始文本、现有行号和水平滚动。
 4. 为四种主题补充高亮 token 配色；未知扩展名继续以纯文本显示。
 5. 更新版本记录，运行 TypeScript/Vite 构建、批处理样例高亮检查和 `git diff --check`，然后创建本地提交，不推送远端。
@@ -24,6 +24,7 @@
 ## 验收标准
 
 - `.bat` / `.cmd` 文件中的 `rem` 注释、命令/关键字、字符串等可以区分着色。
+- `.md` / `.markdown` 文件中的标题、列表、强调文本、行内代码和链接可以区分着色。
 - 代码文件中的常见语法类别有颜色，未知文件类型仍可正常阅读。
 - 高亮前后的行数一致，行号连续；长行仍可横向滚动，空行和文件末尾换行显示正常。
 - 文件内容不会被解释为 HTML，原有复制内容保持不变。
