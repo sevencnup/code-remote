@@ -120,6 +120,17 @@ test('does not retry mutations without a request ID when a gateway fails', async
   assert.deepEqual(delays, [])
 })
 
+test('pairing has a bounded timeout and reports it clearly', async () => {
+  respondWith(new DOMException('The operation timed out', 'TimeoutError'))
+
+  await assert.rejects(
+    codexRemoteClient.pair('ABCDEFGH'),
+    /连接超时，请确认 Codex Remote 服务正在运行后重试。/,
+  )
+  assert.equal(attempts.length, 1)
+  assert.ok(attempts[0].init.signal instanceof AbortSignal)
+})
+
 test('requests a compact resume response instead of downloading old history to send', async () => {
   respondWith(jsonResponse({ id: 'thread-one' }))
 
