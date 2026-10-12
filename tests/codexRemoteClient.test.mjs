@@ -8,7 +8,7 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 })
 const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
-const { codexRemoteClient, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
+const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
 let attempts
@@ -133,6 +133,39 @@ test('requests a compact resume response instead of downloading old history to s
 function userTurn(turnId, messageId, text) {
   return { id: turnId, items: [{ id: messageId, type: 'userMessage', content: [{ type: 'text', text }] }] }
 }
+
+test('restores message send time, reply start time, and completed turn duration', () => {
+  const sentAt = '2026-10-12T10:15:20.000Z'
+  const startedAt = '2026-10-12T10:15:22.000Z'
+  const completedAt = '2026-10-12T10:15:27.500Z'
+  const messages = messagesFromThread({ id: 'thread-one', turns: [{
+    id: 'turn-one',
+    startedAt,
+    completedAt,
+    items: [
+      { id: 'user-one', type: 'userMessage', createdAt: sentAt, content: [{ type: 'text', text: '开始' }] },
+      { id: 'assistant-one', type: 'agentMessage', text: '完成' },
+    ],
+  }] })
+
+  assert.equal(messages[0].sentAt, sentAt)
+  assert.equal(messages[1].replyStartedAt, startedAt)
+  assert.equal(messages[1].replyDurationMs, 5500)
+})
+
+test('uses turn start as the best available historical user send time', () => {
+  const startedAt = '2026-10-12T10:15:22.000Z'
+  const [message] = messagesFromThread({
+    id: 'thread-one',
+    turns: [{ id: 'turn-one', startedAt, items: [{
+      id: 'user-one',
+      type: 'userMessage',
+      content: [{ type: 'text', text: '继续' }],
+    }] }],
+  })
+
+  assert.equal(message.sentAt, startedAt)
+})
 
 test('does not mistake an older repeated prompt omitted from the cache for a delivered message', () => {
   const thread = { id: 'thread-one', turns: [
