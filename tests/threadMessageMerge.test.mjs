@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/lib/threadMessageMerge.ts', import
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { preserveLocalQueuedMessages } = await import(
+const { preserveLocalQueuedMessages, reconcileDeliveredLocalMessage } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
@@ -43,4 +43,33 @@ test('deduplicates a matching message after an existing history anchor', () => {
   const historical = userMessage('server-current', 'turn-current', '同一条')
 
   assert.deepEqual(preserveLocalQueuedMessages([anchor, historical], [anchor, local]), [anchor, historical])
+})
+
+test('reconciles the optimistic message when history arrives before its delivery turn ID', () => {
+  const local = userMessage('queued-request-1', undefined, '请检查这个文件')
+  const historical = userMessage('server-message-1', 'turn-1', '请检查这个文件')
+
+  assert.deepEqual(
+    reconcileDeliveredLocalMessage([local, historical], local.id, 'turn-1', new Set()),
+    [historical],
+  )
+})
+
+test('keeps an earlier identical message when its ID existed before this send', () => {
+  const earlier = userMessage('server-message-earlier', 'turn-1', '再检查一次')
+  const local = userMessage('queued-request-2', undefined, '再检查一次')
+
+  assert.deepEqual(
+    reconcileDeliveredLocalMessage([earlier, local], local.id, 'turn-1', new Set([earlier.id])),
+    [earlier, { ...local, turnId: 'turn-1' }],
+  )
+})
+
+test('attaches a delivery turn ID while the matching history item is still unavailable', () => {
+  const local = userMessage('queued-request-3', undefined, '正在发送')
+
+  assert.deepEqual(
+    reconcileDeliveredLocalMessage([local], local.id, 'turn-2', new Set()),
+    [{ ...local, turnId: 'turn-2' }],
+  )
 })
