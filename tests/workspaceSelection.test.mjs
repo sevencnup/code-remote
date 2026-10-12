@@ -7,7 +7,13 @@ const source = await readFile(new URL('../src/lib/workspaceSelection.ts', import
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 })
-const { createWorkspaceSelectionDocument, formatWorkspaceSelectionReference, workspaceTextSelectionLineRange } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+const {
+  createWorkspaceSelectionDocument,
+  formatWorkspaceSelectionReference,
+  numberWorkspaceSelectionDocument,
+  sameWorkspaceSelectionDocument,
+  workspaceTextSelectionLineRange,
+} = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 
 test('calculates selected text line ranges with LF and CRLF endings', () => {
   const text = 'one\r\ntwo\r\nthree\n'
@@ -39,4 +45,38 @@ test('creates a Markdown document attachment with the source path and selected l
       content: '文件：`C:\\workspace\\src\\app.ts`（第 8–10 行）\n```\nconst answer = 42\n```',
     },
   )
+})
+
+test('numbers code selection documents in both the attachment name and Markdown content', () => {
+  const first = createWorkspaceSelectionDocument('/workspace/src/app.ts', 2, 2, 'const first = true')
+  const second = createWorkspaceSelectionDocument('/workspace/src/app.ts', 8, 9, 'const second = true')
+
+  assert.deepEqual(numberWorkspaceSelectionDocument(first, []), {
+    name: '【代码选区 #1】 app.ts-L2-selection.md',
+    content: '代码选区 #1\n\n文件：`/workspace/src/app.ts`（第 2 行）\n```\nconst first = true\n```',
+  })
+  const numberedSecond = numberWorkspaceSelectionDocument(second, [first])
+  assert.match(numberedSecond.name, /^【代码选区 #2】 /)
+  assert.match(numberedSecond.content, /^代码选区 #2\n\n/)
+})
+
+test('keeps surviving selection numbers stable and assigns new selections after the highest number', () => {
+  const first = numberWorkspaceSelectionDocument(createWorkspaceSelectionDocument('/workspace/a.ts', 1, 1, 'one'), [])
+  const second = numberWorkspaceSelectionDocument(createWorkspaceSelectionDocument('/workspace/a.ts', 2, 2, 'two'), [first])
+  const third = numberWorkspaceSelectionDocument(createWorkspaceSelectionDocument('/workspace/a.ts', 3, 3, 'three'), [first, second])
+  const next = numberWorkspaceSelectionDocument(createWorkspaceSelectionDocument('/workspace/a.ts', 4, 4, 'four'), [first, third])
+
+  assert.equal(second.name, '【代码选区 #2】 a.ts-L2-selection.md')
+  assert.equal(third.name, '【代码选区 #3】 a.ts-L3-selection.md')
+  assert.equal(next.name, '【代码选区 #4】 a.ts-L4-selection.md')
+})
+
+test('does not number ordinary documents and recognizes the same selection after numbering', () => {
+  const ordinary = { name: 'notes.md', content: 'plain notes' }
+  const selection = createWorkspaceSelectionDocument('/workspace/a.ts', 5, 5, 'const value = 5')
+  const numbered = numberWorkspaceSelectionDocument(selection, [])
+
+  assert.deepEqual(numberWorkspaceSelectionDocument(ordinary, []), ordinary)
+  assert.equal(sameWorkspaceSelectionDocument(numbered, selection), true)
+  assert.equal(sameWorkspaceSelectionDocument(numbered, createWorkspaceSelectionDocument('/workspace/a.ts', 6, 6, 'const value = 6')), false)
 })
