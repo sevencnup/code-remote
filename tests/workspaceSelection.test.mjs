@@ -47,6 +47,20 @@ test('creates a Markdown document attachment with the source path and selected l
   )
 })
 
+test('adds a trimmed optional note before the selected code and source reference', () => {
+  assert.deepEqual(
+    createWorkspaceSelectionDocument('/workspace/src/app.ts', 8, 10, 'const answer = 42', '  把这个值改成动态计算。\n再补一个边界检查。  '),
+    {
+      name: 'app.ts-L8-10-selection.md',
+      content: '备注：\n把这个值改成动态计算。\n再补一个边界检查。\n\n文件：`/workspace/src/app.ts`（第 8–10 行）\n```\nconst answer = 42\n```',
+    },
+  )
+  assert.equal(
+    createWorkspaceSelectionDocument('/workspace/src/app.ts', 8, 10, 'const answer = 42', '  ').content,
+    '文件：`/workspace/src/app.ts`（第 8–10 行）\n```\nconst answer = 42\n```',
+  )
+})
+
 test('numbers code selection documents in both the attachment name and Markdown content', () => {
   const first = createWorkspaceSelectionDocument('/workspace/src/app.ts', 2, 2, 'const first = true')
   const second = createWorkspaceSelectionDocument('/workspace/src/app.ts', 8, 9, 'const second = true')
@@ -79,4 +93,13 @@ test('does not number ordinary documents and recognizes the same selection after
   assert.deepEqual(numberWorkspaceSelectionDocument(ordinary, []), ordinary)
   assert.equal(sameWorkspaceSelectionDocument(numbered, selection), true)
   assert.equal(sameWorkspaceSelectionDocument(numbered, createWorkspaceSelectionDocument('/workspace/a.ts', 6, 6, 'const value = 6')), false)
+})
+
+test('numbers selections with a note without mixing up the note and source reference', () => {
+  const selection = createWorkspaceSelectionDocument('/workspace/a.ts', 5, 6, 'const value = 5', '改成读取配置项')
+  const numbered = numberWorkspaceSelectionDocument(selection, [])
+
+  assert.equal(numbered.name, '【代码选区 #1】 a.ts-L5-6-selection.md')
+  assert.match(numbered.content, /^代码选区 #1\n\n备注：\n改成读取配置项\n\n文件：`\/workspace\/a\.ts`（第 5–6 行）/)
+  assert.equal(sameWorkspaceSelectionDocument(numbered, selection), true)
 })
