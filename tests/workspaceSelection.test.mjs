@@ -114,7 +114,7 @@ test('places a mobile selection menu below the selected text when it fits', () =
     menuWidth: 300,
     menuHeight: 132,
     selectionBounds: { top: 80, bottom: 230 },
-  }), { x: 52, y: 238 })
+  }), { x: 52, y: 238, maxHeight: 132 })
 })
 
 test('moves the mobile selection menu above the selected text when it cannot fit below', () => {
@@ -126,7 +126,7 @@ test('moves the mobile selection menu above the selected text when it cannot fit
     menuWidth: 300,
     menuHeight: 132,
     selectionBounds: { top: 500, bottom: 610 },
-  }), { x: 20, y: 360 })
+  }), { x: 20, y: 360, maxHeight: 132 })
 })
 
 test('keeps selection menus within the viewport when the selection leaves limited room', () => {
@@ -140,9 +140,9 @@ test('keeps selection menus within the viewport when the selection leaves limite
     selectionBounds: { top: 100, bottom: 550 },
   })
 
-  assert.deepEqual(position, { x: 52, y: 8 })
+  assert.deepEqual(position, { x: 52, y: 8, maxHeight: 84 })
   assert.ok(position.y >= 8)
-  assert.ok(position.y + 132 <= 632)
+  assert.ok(position.y + position.maxHeight <= 632)
 })
 
 test('clamps the selection menu when selected text is already outside the viewport', () => {
@@ -154,5 +154,5 @@ test('clamps the selection menu when selected text is already outside the viewpo
     menuWidth: 300,
     menuHeight: 132,
     selectionBounds: { top: -80, bottom: -20 },
-  }), { x: 20, y: 8 })
+  }), { x: 20, y: 8, maxHeight: 132 })
 })
