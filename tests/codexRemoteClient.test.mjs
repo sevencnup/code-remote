@@ -11,6 +11,7 @@ const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
 const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
+const originalWebSocket = globalThis.WebSocket
 let attempts
 let delays
 
@@ -28,8 +29,97 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+  if (originalWebSocket === undefined) delete globalThis.WebSocket
+  else globalThis.WebSocket = originalWebSocket
   if (originalWindow === undefined) delete globalThis.window
   else globalThis.window = originalWindow
+})
+
+function installFakeWebSocket() {
+  const timers = new Map()
+  let nextTimerId = 1
+
+  class FakeWebSocket {
+    static OPEN = 1
+
+    static CLOSED = 3
+
+    static instances = []
+
+    readyState = 0
+    listeners = new Map()
+    sent = []
+
+    constructor(url) {
+      this.url = String(url)
+      FakeWebSocket.instances.push(this)
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) ?? []
+      listeners.push(listener)
+      this.listeners.set(type, listeners)
+    }
+
+    send(message) {
+      this.sent.push(message)
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED
+      this.emit('close')
+    }
+
+    emit(type, event = {}) {
+      if (type === 'open') this.readyState = FakeWebSocket.OPEN
+      for (const listener of this.listeners.get(type) ?? []) listener(event)
+    }
+  }
+
+  globalThis.WebSocket = FakeWebSocket
+  globalThis.window = {
+    location: { origin: 'http://localhost:4173', protocol: 'http:' },
+    setTimeout(callback, delay) {
+      const id = nextTimerId++
+      timers.set(id, { callback, delay, cancelled: false })
+      return id
+    },
+    clearTimeout(id) {
+      const timer = timers.get(id)
+      if (timer) timer.cancelled = true
+    },
+  }
+
+  return {
+    FakeWebSocket,
+    firePendingTimer() {
+      const timer = [...timers.values()].find(({ cancelled }) => !cancelled)
+      assert.ok(timer, 'expected a pending WebSocket connection timeout')
+      timer.callback()
+      return timer.delay
+    },
+  }
+}
+
+test('reports an unavailable runtime instead of staying connecting when the WebSocket handshake stalls', () => {
+  const { FakeWebSocket, firePendingTimer } = installFakeWebSocket()
+  const states = []
+  const events = []
+  const socket = codexRemoteClient.connect('test-token', (event) => events.push(event), (state) => states.push(state))
+  const webSocket = FakeWebSocket.instances[0]
+
+  webSocket.emit('open')
+  assert.equal(JSON.parse(webSocket.sent[0]).type, 'codex.client.hello')
+  assert.deepEqual(states, ['connecting'])
+
+  assert.equal(firePendingTimer(), 60_000)
+  assert.equal(states.at(-1), 'unavailable')
+  assert.equal(events.at(-1).type, 'connection')
+  assert.equal(events.at(-1).connected, false)
+  assert.match(events.at(-1).error, /Codex 引擎连接超时/)
+  assert.equal(webSocket.readyState, FakeWebSocket.CLOSED)
+
+  socket.close()
 })
 
 function respondWith(...responses) {
