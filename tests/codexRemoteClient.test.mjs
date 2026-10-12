@@ -164,6 +164,23 @@ test('restores message send time, reply start time, and completed turn duration'
   assert.equal(messages[1].replyDurationMs, 5500)
 })
 
+test('renders recent Codex history event messages as visible chat bubbles', () => {
+  const messages = messagesFromThread({ id: 'thread-one', turns: [{
+    id: 'turn-one',
+    startedAt: '2026-10-12T02:36:43Z',
+    completedAt: '2026-10-12T02:37:00Z',
+    items: [
+      { id: 'user-one', type: 'userMessage', createdAt: '2026-10-12T02:36:43Z', content: [{ type: 'text', text: '读取不到聊天' }] },
+      { id: 'assistant-one', type: 'agentMessage', createdAt: '2026-10-12T02:36:53Z', text: '正在检查历史解析。' },
+    ],
+  }] })
+
+  assert.deepEqual(messages.map(({ role, text, turnId }) => ({ role, text, turnId })), [
+    { role: 'user', text: '读取不到聊天', turnId: 'turn-one' },
+    { role: 'assistant', text: '正在检查历史解析。', turnId: 'turn-one' },
+  ])
+})
+
 test('uses turn start as the best available historical user send time', () => {
   const startedAt = '2026-10-12T10:15:22.000Z'
   const [message] = messagesFromThread({
