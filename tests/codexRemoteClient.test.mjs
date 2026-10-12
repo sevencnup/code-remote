@@ -195,3 +195,36 @@ test('cannot confirm a send from old history when no message or turn baseline is
 
   assert.equal(threadContainsNewPayload(thread, new Set(), new Set(), { requestText: '继续', images: [] }), false)
 })
+
+test('restores original PDF attachments from history without exposing the temporary path', () => {
+  const attachmentId = 'Ab'.repeat(16)
+  const marker = `[[CODEX_REMOTE_PDF_BEGIN id=${attachmentId} name=INVOICE%203522.pdf]]\n原始文件路径：\`/tmp/private/${attachmentId}.pdf\`\n请使用本机工具读取原件。\n[[CODEX_REMOTE_PDF_END id=${attachmentId}]]`
+  const [message] = messagesFromThread({ id: 'thread-one', turns: [userTurn('turn-one', 'message-one', `DUE DATE 右边是什么？\n\n${marker}`)] })
+
+  assert.equal(message.text, 'DUE DATE 右边是什么？')
+  assert.deepEqual(message.documents, [{ name: 'INVOICE 3522.pdf', content: '', sourceFileId: attachmentId, charCount: 0 }])
+  assert.doesNotMatch(message.text, /\/tmp\/private/)
+  const thread = { id: 'thread-one', turns: [
+    userTurn('known-turn', 'known-message', '上一条消息'),
+    userTurn('turn-one', 'message-one', `DUE DATE 右边是什么？\n\n${marker}`),
+  ] }
+  assert.equal(threadContainsNewPayload(thread, new Set(['known-message']), new Set(['known-turn']), {
+    requestText: 'DUE DATE 右边是什么？', images: [], documents: [{ name: 'INVOICE 3522.pdf', content: '', sourceFileId: attachmentId }],
+  }), true)
+})
+
+test('sends PDF attachment IDs without embedding PDF contents into the turn request', async () => {
+  respondWith(jsonResponse({ turn_id: 'turn-one' }))
+  const attachmentId = 'Cd'.repeat(16)
+
+  await codexRemoteClient.startTurn('test-token', 'thread-one', {
+    ...turnInput,
+    prompt: 'DUE DATE 右边是什么？',
+    documents: [{ name: 'invoice.pdf', content: '', sourceFileId: attachmentId }],
+  })
+
+  const body = JSON.parse(attempts[0].init.body)
+  assert.deepEqual(body.pdf_attachments, [attachmentId])
+  assert.equal(body.prompt, 'DUE DATE 右边是什么？')
+  assert.equal(JSON.stringify(body).includes('%PDF-'), false)
+})
