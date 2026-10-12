@@ -38,3 +38,7 @@
 - 图片不作为可猜测的局域网静态地址暴露，服务退出后临时文件被删除。
 - 不支持图片输入的已选模型会在网页阻止附加图片并给出说明。
 - `pnpm --filter codex-remote build` 成功。
+
+## 多格式文档附件
+
+输入框还支持从 PDF、Office/OpenDocument、RTF、常见文本/数据文件和源码文件中提取文字后随消息发送。格式清单、解析限制和不支持的旧版二进制格式见 [多格式文件附件开发文档](./MULTIFORMAT_FILE_ATTACHMENTS_DEVELOPMENT.md)。

@@ -8,7 +8,7 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 })
 const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
-const { codexRemoteClient, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
+const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
 let attempts
@@ -145,6 +145,39 @@ function userTurn(turnId, messageId, text) {
   return { id: turnId, items: [{ id: messageId, type: 'userMessage', content: [{ type: 'text', text }] }] }
 }
 
+test('restores message send time, reply start time, and completed turn duration', () => {
+  const sentAt = '2026-10-12T10:15:20.000Z'
+  const startedAt = '2026-10-12T10:15:22.000Z'
+  const completedAt = '2026-10-12T10:15:27.500Z'
+  const messages = messagesFromThread({ id: 'thread-one', turns: [{
+    id: 'turn-one',
+    startedAt,
+    completedAt,
+    items: [
+      { id: 'user-one', type: 'userMessage', createdAt: sentAt, content: [{ type: 'text', text: '开始' }] },
+      { id: 'assistant-one', type: 'agentMessage', text: '完成' },
+    ],
+  }] })
+
+  assert.equal(messages[0].sentAt, sentAt)
+  assert.equal(messages[1].replyStartedAt, startedAt)
+  assert.equal(messages[1].replyDurationMs, 5500)
+})
+
+test('uses turn start as the best available historical user send time', () => {
+  const startedAt = '2026-10-12T10:15:22.000Z'
+  const [message] = messagesFromThread({
+    id: 'thread-one',
+    turns: [{ id: 'turn-one', startedAt, items: [{
+      id: 'user-one',
+      type: 'userMessage',
+      content: [{ type: 'text', text: '继续' }],
+    }] }],
+  })
+
+  assert.equal(message.sentAt, startedAt)
+})
+
 test('does not mistake an older repeated prompt omitted from the cache for a delivered message', () => {
   const thread = { id: 'thread-one', turns: [
     userTurn('older-turn', 'older-message', '继续'),
@@ -172,4 +205,49 @@ test('cannot confirm a send from old history when no message or turn baseline is
   const thread = { id: 'thread-one', turns: [userTurn('older-turn', 'older-message', '继续')] }
 
   assert.equal(threadContainsNewPayload(thread, new Set(), new Set(), { requestText: '继续', images: [] }), false)
+})
+
+test('restores original PDF attachments from history without exposing the temporary path', () => {
+  const attachmentId = 'Ab'.repeat(16)
+  const marker = `[[CODEX_REMOTE_PDF_BEGIN id=${attachmentId} name=INVOICE%203522.pdf]]\n原始文件路径：\`/tmp/private/${attachmentId}.pdf\`\n请使用本机工具读取原件。\n[[CODEX_REMOTE_PDF_END id=${attachmentId}]]`
+  const [message] = messagesFromThread({ id: 'thread-one', turns: [userTurn('turn-one', 'message-one', `DUE DATE 右边是什么？\n\n${marker}`)] })
+
+  assert.equal(message.text, 'DUE DATE 右边是什么？')
+  assert.deepEqual(message.documents, [{ name: 'INVOICE 3522.pdf', content: '', sourceFileId: attachmentId, charCount: 0 }])
+  assert.doesNotMatch(message.text, /\/tmp\/private/)
+  const thread = { id: 'thread-one', turns: [
+    userTurn('known-turn', 'known-message', '上一条消息'),
+    userTurn('turn-one', 'message-one', `DUE DATE 右边是什么？\n\n${marker}`),
+  ] }
+  assert.equal(threadContainsNewPayload(thread, new Set(['known-message']), new Set(['known-turn']), {
+    requestText: 'DUE DATE 右边是什么？', images: [], documents: [{ name: 'INVOICE 3522.pdf', content: '', sourceFileId: attachmentId }],
+  }), true)
+})
+
+test('sends PDF attachment IDs without embedding PDF contents into the turn request', async () => {
+  respondWith(jsonResponse({ turn_id: 'turn-one' }))
+  const attachmentId = 'Cd'.repeat(16)
+
+  await codexRemoteClient.startTurn('test-token', 'thread-one', {
+    ...turnInput,
+    prompt: 'DUE DATE 右边是什么？',
+    documents: [{ name: 'invoice.pdf', content: '', sourceFileId: attachmentId }],
+  })
+
+  const body = JSON.parse(attempts[0].init.body)
+  assert.deepEqual(body.pdf_attachments, [attachmentId])
+  assert.equal(body.prompt, 'DUE DATE 右边是什么？')
+  assert.equal(JSON.stringify(body).includes('%PDF-'), false)
+})
+
+test('renames a thread through the authenticated thread-name API', async () => {
+  respondWith(jsonResponse({ thread_id: 'thread-one', name: '项目讨论' }))
+
+  const result = await codexRemoteClient.renameThread('test-token', 'thread/one', '项目讨论')
+
+  assert.deepEqual(result, { thread_id: 'thread-one', name: '项目讨论' })
+  assert.equal(attempts[0].path, '/api/v1/codex/threads/thread%2Fone/name')
+  assert.equal(attempts[0].init.method, 'POST')
+  assert.equal(attempts[0].init.headers.Authorization, 'Bearer test-token')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), { name: '项目讨论' })
 })
