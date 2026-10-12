@@ -228,3 +228,15 @@ test('sends PDF attachment IDs without embedding PDF contents into the turn requ
   assert.equal(body.prompt, 'DUE DATE 右边是什么？')
   assert.equal(JSON.stringify(body).includes('%PDF-'), false)
 })
+
+test('renames a thread through the authenticated thread-name API', async () => {
+  respondWith(jsonResponse({ thread_id: 'thread-one', name: '项目讨论' }))
+
+  const result = await codexRemoteClient.renameThread('test-token', 'thread/one', '项目讨论')
+
+  assert.deepEqual(result, { thread_id: 'thread-one', name: '项目讨论' })
+  assert.equal(attempts[0].path, '/api/v1/codex/threads/thread%2Fone/name')
+  assert.equal(attempts[0].init.method, 'POST')
+  assert.equal(attempts[0].init.headers.Authorization, 'Bearer test-token')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), { name: '项目讨论' })
+})
