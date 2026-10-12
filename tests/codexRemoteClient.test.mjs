@@ -213,6 +213,36 @@ test('restores original PDF attachments from history without exposing the tempor
   }), true)
 })
 
+test('restores text document attachments as cards and confirms the expanded request from history', () => {
+  const firstContent = '# 项目说明\n\n请检查这段较长的内容。'
+  const secondContent = '选区代码\nconst answer = 42'
+  const requestText = `请总结并修改：\n\n[附件文档：pasted-content.md]\n${firstContent}\n[/附件文档]\n\n[附件文档：selection-2.md]\n${secondContent}\n[/附件文档]`
+  const [message] = messagesFromThread({
+    id: 'thread-one',
+    turns: [userTurn('turn-one', 'message-one', requestText)],
+  })
+
+  assert.equal(message.text, '请总结并修改：')
+  assert.deepEqual(message.documents, [
+    { name: 'pasted-content.md', content: firstContent, charCount: firstContent.length },
+    { name: 'selection-2.md', content: secondContent, charCount: secondContent.length },
+  ])
+  assert.equal(threadContainsNewPayload({
+    id: 'thread-one',
+    turns: [
+      userTurn('known-turn', 'known-message', '上一条'),
+      userTurn('turn-one', 'message-one', requestText),
+    ],
+  }, new Set(['known-message']), new Set(['known-turn']), {
+    requestText,
+    images: [],
+    documents: [
+      { name: 'pasted-content.md', content: firstContent },
+      { name: 'selection-2.md', content: secondContent },
+    ],
+  }), true)
+})
+
 test('sends PDF attachment IDs without embedding PDF contents into the turn request', async () => {
   respondWith(jsonResponse({ turn_id: 'turn-one' }))
   const attachmentId = 'Cd'.repeat(16)
