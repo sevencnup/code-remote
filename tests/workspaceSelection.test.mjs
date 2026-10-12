@@ -12,6 +12,7 @@ const {
   formatWorkspaceSelectionReference,
   numberWorkspaceSelectionDocument,
   sameWorkspaceSelectionDocument,
+  workspaceSelectionMenuPosition,
   workspaceTextSelectionLineRange,
 } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 
@@ -102,4 +103,56 @@ test('numbers selections with a note without mixing up the note and source refer
   assert.equal(numbered.name, '【代码选区 #1】 a.ts-L5-6-selection.md')
   assert.match(numbered.content, /^代码选区 #1\n\n备注：\n改成读取配置项\n\n文件：`\/workspace\/a\.ts`（第 5–6 行）/)
   assert.equal(sameWorkspaceSelectionDocument(numbered, selection), true)
+})
+
+test('places a mobile selection menu below the selected text when it fits', () => {
+  assert.deepEqual(workspaceSelectionMenuPosition({
+    anchorX: 270,
+    anchorY: 100,
+    viewportWidth: 360,
+    viewportHeight: 640,
+    menuWidth: 300,
+    menuHeight: 132,
+    selectionBounds: { top: 80, bottom: 230 },
+  }), { x: 52, y: 238 })
+})
+
+test('moves the mobile selection menu above the selected text when it cannot fit below', () => {
+  assert.deepEqual(workspaceSelectionMenuPosition({
+    anchorX: 20,
+    anchorY: 580,
+    viewportWidth: 360,
+    viewportHeight: 640,
+    menuWidth: 300,
+    menuHeight: 132,
+    selectionBounds: { top: 500, bottom: 610 },
+  }), { x: 20, y: 360 })
+})
+
+test('keeps selection menus within the viewport when the selection leaves limited room', () => {
+  const position = workspaceSelectionMenuPosition({
+    anchorX: 355,
+    anchorY: 320,
+    viewportWidth: 360,
+    viewportHeight: 640,
+    menuWidth: 300,
+    menuHeight: 132,
+    selectionBounds: { top: 100, bottom: 550 },
+  })
+
+  assert.deepEqual(position, { x: 52, y: 8 })
+  assert.ok(position.y >= 8)
+  assert.ok(position.y + 132 <= 632)
+})
+
+test('clamps the selection menu when selected text is already outside the viewport', () => {
+  assert.deepEqual(workspaceSelectionMenuPosition({
+    anchorX: 20,
+    anchorY: 0,
+    viewportWidth: 360,
+    viewportHeight: 640,
+    menuWidth: 300,
+    menuHeight: 132,
+    selectionBounds: { top: -80, bottom: -20 },
+  }), { x: 20, y: 8 })
 })
