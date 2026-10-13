@@ -18,3 +18,21 @@ test('optimistic removal stays hidden through stale server snapshots and rolls b
   pending.delete('first')
   assert.equal(visibleQueuedMessages(queue, pending), queue)
 })
+
+test('only waiting and uncertain deliveries count as queued on every device', () => {
+  const queue = [
+    { id: 'direct', deliveryState: 'submitting' },
+    { id: 'starting', deliveryState: 'sending', sendAttempt: { at: 'now' } },
+    { id: 'waiting', deliveryState: 'pending' },
+    { id: 'unknown', deliveryState: 'unverified', sendAttempt: { at: 'earlier' } },
+    { id: 'legacy' },
+  ]
+  assert.deepEqual(visibleQueuedMessages(queue).map(({ id }) => id), ['waiting', 'unknown', 'legacy'])
+  assert.deepEqual(visibleQueuedMessages(queue, new Set(['waiting'])).map(({ id }) => id), ['unknown', 'legacy'])
+})
+
+test('an unconfirmed send becomes visible for review, not silently retried', () => {
+  assert.deepEqual(visibleQueuedMessages([{ id: 'message', deliveryState: 'sending' }]), [])
+  const unknown = [{ id: 'message', deliveryState: 'unverified', sendAttempt: { at: 'now' } }]
+  assert.deepEqual(visibleQueuedMessages(unknown), unknown)
+})
