@@ -8,7 +8,7 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 })
 const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
-const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
+const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload, userMessageFromEventItem } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
 let attempts
@@ -219,6 +219,32 @@ test('uses turn start as the best available historical user send time', () => {
   })
 
   assert.equal(message.sentAt, startedAt)
+})
+
+test('parses a live user-message event without waiting for full thread history', () => {
+  const sentAt = '2026-10-13T10:15:20.000Z'
+  const message = userMessageFromEventItem({
+    id: 'app-server-item-1',
+    type: 'userMessage',
+    createdAt: sentAt,
+    content: [{ type: 'text', text: '请检查文档\n\n[附件文档：readme.md]\n项目内容\n[/附件文档]' }],
+  }, 'turn-live')
+
+  assert.deepEqual(message, {
+    id: 'remote-user-app-server-item-1',
+    sourceItemId: 'app-server-item-1',
+    role: 'user',
+    text: '请检查文档',
+    createdAt: sentAt,
+    sentAt,
+    turnId: 'turn-live',
+    documents: [{ name: 'readme.md', content: '项目内容', charCount: 4 }],
+  })
+})
+
+test('falls back to history when a live user-message event has no renderable content or ID', () => {
+  assert.equal(userMessageFromEventItem({ type: 'userMessage', content: [{ type: 'text', text: '消息' }] }, 'turn-live'), null)
+  assert.equal(userMessageFromEventItem({ id: 'empty', type: 'userMessage', content: [] }, 'turn-live'), null)
 })
 
 test('does not mistake an older repeated prompt omitted from the cache for a delivered message', () => {

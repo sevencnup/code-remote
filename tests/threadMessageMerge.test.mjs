@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/lib/threadMessageMerge.ts', import
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { deliveredQueuedMessageIdsFromHistory, legacyDuplicateQueuedMessageId, mightBeLegacyDuplicateQueuedMessage, preserveLocalQueuedMessages, reconcileDeliveredLocalMessage } = await import(
+const { deliveredQueuedMessageIdsFromHistory, insertRemoteUserMessage, legacyDuplicateQueuedMessageId, mightBeLegacyDuplicateQueuedMessage, preserveLocalQueuedMessages, reconcileDeliveredLocalMessage } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
@@ -35,6 +35,32 @@ test('keeps an optimistic message when it has not arrived in history yet', () =>
   const local = userMessage('queued-local', 'turn-current', '正在发送')
 
   assert.deepEqual(preserveLocalQueuedMessages([anchor], [anchor, local]), [anchor, local])
+})
+
+test('inserts the first live user item before an assistant reply that streamed first', () => {
+  const earlier = userMessage('earlier', 'turn-earlier', '前一轮')
+  const assistant = { id: 'streaming-turn-live', role: 'assistant', turnId: 'turn-live', text: '回复先到', createdAt: '2026-10-13T15:00:01.000Z', streaming: true }
+  const incoming = { id: 'remote-user-item-live', sourceItemId: 'item-live', role: 'user', turnId: 'turn-live', text: '用户先发', createdAt: '2026-10-13T15:00:00.000Z' }
+
+  const visible = insertRemoteUserMessage([earlier, assistant], incoming)
+  assert.deepEqual(visible, [earlier, incoming, assistant])
+  assert.deepEqual(insertRemoteUserMessage(visible, incoming), visible)
+})
+
+test('places a later live steer after the previous user and assistant messages', () => {
+  const previousUser = userMessage('user-first', 'turn-live', '第一条')
+  const previousAssistant = { id: 'assistant-first', role: 'assistant', turnId: 'turn-live', text: '第一段回复', createdAt: '2026-10-13T15:00:01.000Z' }
+  const incoming = { id: 'remote-user-item-next', sourceItemId: 'item-next', role: 'user', turnId: 'turn-live', text: '补充一条', createdAt: '2026-10-13T15:00:02.000Z' }
+
+  assert.deepEqual(insertRemoteUserMessage([previousUser, previousAssistant], incoming), [previousUser, previousAssistant, incoming])
+})
+
+test('preserves a live user item across a stale history read and replaces it when canonical history catches up', () => {
+  const live = { id: 'remote-user-item-live', sourceItemId: 'item-live', role: 'user', turnId: 'turn-live', text: '实时消息', createdAt: '2026-10-13T15:00:00.000Z' }
+  const canonical = userMessage('item-live', 'turn-live', '实时消息')
+
+  assert.deepEqual(preserveLocalQueuedMessages([], [live]), [live])
+  assert.deepEqual(preserveLocalQueuedMessages([canonical], [live]), [canonical])
 })
 
 test('deduplicates a matching message after an existing history anchor', () => {
