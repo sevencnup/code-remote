@@ -130,6 +130,46 @@ test('requests a compact resume response instead of downloading old history to s
   })
 })
 
+test('retries shared queue enqueue with the same durable message ID', async () => {
+  const queued = {
+    id: 'queued-shared-001', text: '继续', requestText: '继续', images: [],
+    createdAt: '2026-10-13T00:00:00Z',
+  }
+  respondWith(interruptedBody(), jsonResponse({ queue: [queued] }))
+
+  assert.deepEqual((await codexRemoteClient.enqueueMessage('test-token', 'thread-one', queued)).queue, [queued])
+  assert.equal(attempts.length, 2)
+  assert.equal(attempts[0].init.body, attempts[1].init.body)
+  assert.equal(JSON.parse(attempts[1].init.body).id, queued.id)
+})
+
+test('reads shared pins and changes a pin through authenticated endpoints', async () => {
+  respondWith(jsonResponse({ thread_ids: [] }), jsonResponse({ thread_ids: ['thread-one'] }))
+
+  assert.deepEqual((await codexRemoteClient.pins('test-token')).thread_ids, [])
+  assert.deepEqual((await codexRemoteClient.setThreadPin('test-token', 'thread-one', true)).thread_ids, ['thread-one'])
+  assert.equal(attempts[0].path, '/api/v1/codex/pins')
+  assert.equal(attempts[1].path, '/api/v1/codex/threads/thread-one/pin')
+  assert.equal(JSON.parse(attempts[1].init.body).pinned, true)
+  assert.equal(attempts[1].init.headers.Authorization, 'Bearer test-token')
+})
+
+test('starts an idle queue head without steering a still-running turn', async () => {
+  respondWith(jsonResponse({ sent: false, queue: [] }))
+
+  assert.equal((await codexRemoteClient.startQueuedIfIdle('test-token', 'thread-one', 'queued-first')).sent, false)
+  assert.equal(attempts[0].path, '/api/v1/codex/queue/thread-one/start-if-idle')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), { message_id: 'queued-first' })
+})
+
+test('identifies an edit owner so retrying begin-edit remains idempotent', async () => {
+  respondWith(jsonResponse({ queue: [] }))
+
+  await codexRemoteClient.queueAction('test-token', 'thread-one', 'edit/begin', 'queued-first', 'owner-one')
+  assert.equal(attempts[0].path, '/api/v1/codex/queue/thread-one/edit/begin')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), { message_id: 'queued-first', owner_id: 'owner-one' })
+})
+
 function userTurn(turnId, messageId, text) {
   return { id: turnId, items: [{ id: messageId, type: 'userMessage', content: [{ type: 'text', text }] }] }
 }
