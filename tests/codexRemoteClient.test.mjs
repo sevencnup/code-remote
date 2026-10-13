@@ -11,6 +11,7 @@ const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
 const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload, userMessageFromEventItem } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
+const originalWebSocket = globalThis.WebSocket
 let attempts
 let delays
 
@@ -28,8 +29,97 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+  if (originalWebSocket === undefined) delete globalThis.WebSocket
+  else globalThis.WebSocket = originalWebSocket
   if (originalWindow === undefined) delete globalThis.window
   else globalThis.window = originalWindow
+})
+
+function installFakeWebSocket() {
+  const timers = new Map()
+  let nextTimerId = 1
+
+  class FakeWebSocket {
+    static OPEN = 1
+
+    static CLOSED = 3
+
+    static instances = []
+
+    readyState = 0
+    listeners = new Map()
+    sent = []
+
+    constructor(url) {
+      this.url = String(url)
+      FakeWebSocket.instances.push(this)
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) ?? []
+      listeners.push(listener)
+      this.listeners.set(type, listeners)
+    }
+
+    send(message) {
+      this.sent.push(message)
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED
+      this.emit('close')
+    }
+
+    emit(type, event = {}) {
+      if (type === 'open') this.readyState = FakeWebSocket.OPEN
+      for (const listener of this.listeners.get(type) ?? []) listener(event)
+    }
+  }
+
+  globalThis.WebSocket = FakeWebSocket
+  globalThis.window = {
+    location: { origin: 'http://localhost:4173', protocol: 'http:' },
+    setTimeout(callback, delay) {
+      const id = nextTimerId++
+      timers.set(id, { callback, delay, cancelled: false })
+      return id
+    },
+    clearTimeout(id) {
+      const timer = timers.get(id)
+      if (timer) timer.cancelled = true
+    },
+  }
+
+  return {
+    FakeWebSocket,
+    firePendingTimer() {
+      const timer = [...timers.values()].find(({ cancelled }) => !cancelled)
+      assert.ok(timer, 'expected a pending WebSocket connection timeout')
+      timer.callback()
+      return timer.delay
+    },
+  }
+}
+
+test('reports an unavailable runtime instead of staying connecting when the WebSocket handshake stalls', () => {
+  const { FakeWebSocket, firePendingTimer } = installFakeWebSocket()
+  const states = []
+  const events = []
+  const socket = codexRemoteClient.connect('test-token', (event) => events.push(event), (state) => states.push(state))
+  const webSocket = FakeWebSocket.instances[0]
+
+  webSocket.emit('open')
+  assert.equal(JSON.parse(webSocket.sent[0]).type, 'codex.client.hello')
+  assert.deepEqual(states, ['connecting'])
+
+  assert.equal(firePendingTimer(), 60_000)
+  assert.equal(states.at(-1), 'unavailable')
+  assert.equal(events.at(-1).type, 'connection')
+  assert.equal(events.at(-1).connected, false)
+  assert.match(events.at(-1).error, /Codex 引擎连接超时/)
+  assert.equal(webSocket.readyState, FakeWebSocket.CLOSED)
+
+  socket.close()
 })
 
 function respondWith(...responses) {
@@ -120,6 +210,17 @@ test('does not retry mutations without a request ID when a gateway fails', async
   assert.deepEqual(delays, [])
 })
 
+test('pairing has a bounded timeout and reports it clearly', async () => {
+  respondWith(new DOMException('The operation timed out', 'TimeoutError'))
+
+  await assert.rejects(
+    codexRemoteClient.pair('ABCDEFGH'),
+    /连接超时，请确认 Codex Remote 服务正在运行后重试。/,
+  )
+  assert.equal(attempts.length, 1)
+  assert.ok(attempts[0].init.signal instanceof AbortSignal)
+})
+
 test('requests a compact resume response instead of downloading old history to send', async () => {
   respondWith(jsonResponse({ id: 'thread-one' }))
 
@@ -205,6 +306,23 @@ test('restores message send time, reply start time, and completed turn duration'
   assert.equal(messages[0].sentAt, sentAt)
   assert.equal(messages[1].replyStartedAt, startedAt)
   assert.equal(messages[1].replyDurationMs, 5500)
+})
+
+test('renders recent Codex history event messages as visible chat bubbles', () => {
+  const messages = messagesFromThread({ id: 'thread-one', turns: [{
+    id: 'turn-one',
+    startedAt: '2026-10-12T02:36:43Z',
+    completedAt: '2026-10-12T02:37:00Z',
+    items: [
+      { id: 'user-one', type: 'userMessage', createdAt: '2026-10-12T02:36:43Z', content: [{ type: 'text', text: '读取不到聊天' }] },
+      { id: 'assistant-one', type: 'agentMessage', createdAt: '2026-10-12T02:36:53Z', text: '正在检查历史解析。' },
+    ],
+  }] })
+
+  assert.deepEqual(messages.map(({ role, text, turnId }) => ({ role, text, turnId })), [
+    { role: 'user', text: '读取不到聊天', turnId: 'turn-one' },
+    { role: 'assistant', text: '正在检查历史解析。', turnId: 'turn-one' },
+  ])
 })
 
 test('uses turn start as the best available historical user send time', () => {
