@@ -19,6 +19,7 @@ test('restores a running turn and its server start timestamp from history', () =
     running: true,
     hasTurn: true,
     turnId: 'turn-current',
+    status: 'inProgress',
     startedAt: Date.parse('2026-10-12T10:15:30Z'),
   })
 })

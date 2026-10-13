@@ -8,7 +8,7 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 })
 const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
-const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
+const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload, userMessageFromEventItem } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
 const originalWebSocket = globalThis.WebSocket
@@ -231,6 +231,60 @@ test('requests a compact resume response instead of downloading old history to s
   })
 })
 
+test('retries shared queue enqueue with the same durable message ID', async () => {
+  const queued = {
+    id: 'queued-shared-001', text: '继续', requestText: '继续', images: [],
+    createdAt: '2026-10-13T00:00:00Z',
+  }
+  respondWith(interruptedBody(), jsonResponse({ queue: [queued] }))
+
+  assert.deepEqual((await codexRemoteClient.enqueueMessage('test-token', 'thread-one', queued)).queue, [queued])
+  assert.equal(attempts.length, 2)
+  assert.equal(attempts[0].init.body, attempts[1].init.body)
+  assert.equal(JSON.parse(attempts[1].init.body).id, queued.id)
+})
+
+test('submits a message once to the server-selected direct-or-queue path', async () => {
+  const queued = {
+    id: 'queued-submit-001', text: '继续', requestText: '继续', images: [],
+    createdAt: '2026-10-13T00:00:00Z',
+  }
+  respondWith(interruptedBody(), jsonResponse({ sent: true, queue: [] }))
+
+  assert.deepEqual(await codexRemoteClient.submitMessage('test-token', 'thread-one', queued), { sent: true, queue: [] })
+  assert.equal(attempts.length, 2)
+  assert.equal(attempts[0].path, '/api/v1/codex/queue/thread-one/submit')
+  assert.equal(attempts[0].init.body, attempts[1].init.body)
+  assert.equal(JSON.parse(attempts[1].init.body).id, queued.id)
+})
+
+test('reads shared pins and changes a pin through authenticated endpoints', async () => {
+  respondWith(jsonResponse({ thread_ids: [] }), jsonResponse({ thread_ids: ['thread-one'] }))
+
+  assert.deepEqual((await codexRemoteClient.pins('test-token')).thread_ids, [])
+  assert.deepEqual((await codexRemoteClient.setThreadPin('test-token', 'thread-one', true)).thread_ids, ['thread-one'])
+  assert.equal(attempts[0].path, '/api/v1/codex/pins')
+  assert.equal(attempts[1].path, '/api/v1/codex/threads/thread-one/pin')
+  assert.equal(JSON.parse(attempts[1].init.body).pinned, true)
+  assert.equal(attempts[1].init.headers.Authorization, 'Bearer test-token')
+})
+
+test('starts an idle queue head without steering a still-running turn', async () => {
+  respondWith(jsonResponse({ sent: false, queue: [] }))
+
+  assert.equal((await codexRemoteClient.startQueuedIfIdle('test-token', 'thread-one', 'queued-first')).sent, false)
+  assert.equal(attempts[0].path, '/api/v1/codex/queue/thread-one/start-if-idle')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), { message_id: 'queued-first' })
+})
+
+test('identifies an edit owner so retrying begin-edit remains idempotent', async () => {
+  respondWith(jsonResponse({ queue: [] }))
+
+  await codexRemoteClient.queueAction('test-token', 'thread-one', 'edit/begin', 'queued-first', 'owner-one')
+  assert.equal(attempts[0].path, '/api/v1/codex/queue/thread-one/edit/begin')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), { message_id: 'queued-first', owner_id: 'owner-one' })
+})
+
 function userTurn(turnId, messageId, text) {
   return { id: turnId, items: [{ id: messageId, type: 'userMessage', content: [{ type: 'text', text }] }] }
 }
@@ -285,6 +339,32 @@ test('uses turn start as the best available historical user send time', () => {
   assert.equal(message.sentAt, startedAt)
 })
 
+test('parses a live user-message event without waiting for full thread history', () => {
+  const sentAt = '2026-10-13T10:15:20.000Z'
+  const message = userMessageFromEventItem({
+    id: 'app-server-item-1',
+    type: 'userMessage',
+    createdAt: sentAt,
+    content: [{ type: 'text', text: '请检查文档\n\n[附件文档：readme.md]\n项目内容\n[/附件文档]' }],
+  }, 'turn-live')
+
+  assert.deepEqual(message, {
+    id: 'remote-user-app-server-item-1',
+    sourceItemId: 'app-server-item-1',
+    role: 'user',
+    text: '请检查文档',
+    createdAt: sentAt,
+    sentAt,
+    turnId: 'turn-live',
+    documents: [{ name: 'readme.md', content: '项目内容', charCount: 4 }],
+  })
+})
+
+test('falls back to history when a live user-message event has no renderable content or ID', () => {
+  assert.equal(userMessageFromEventItem({ type: 'userMessage', content: [{ type: 'text', text: '消息' }] }, 'turn-live'), null)
+  assert.equal(userMessageFromEventItem({ id: 'empty', type: 'userMessage', content: [] }, 'turn-live'), null)
+})
+
 test('does not mistake an older repeated prompt omitted from the cache for a delivered message', () => {
   const thread = { id: 'thread-one', turns: [
     userTurn('older-turn', 'older-message', '继续'),
@@ -328,6 +408,36 @@ test('restores original PDF attachments from history without exposing the tempor
   ] }
   assert.equal(threadContainsNewPayload(thread, new Set(['known-message']), new Set(['known-turn']), {
     requestText: 'DUE DATE 右边是什么？', images: [], documents: [{ name: 'INVOICE 3522.pdf', content: '', sourceFileId: attachmentId }],
+  }), true)
+})
+
+test('restores text document attachments as cards and confirms the expanded request from history', () => {
+  const firstContent = '# 项目说明\n\n请检查这段较长的内容。'
+  const secondContent = '选区代码\nconst answer = 42'
+  const requestText = `请总结并修改：\n\n[附件文档：pasted-content.md]\n${firstContent}\n[/附件文档]\n\n[附件文档：selection-2.md]\n${secondContent}\n[/附件文档]`
+  const [message] = messagesFromThread({
+    id: 'thread-one',
+    turns: [userTurn('turn-one', 'message-one', requestText)],
+  })
+
+  assert.equal(message.text, '请总结并修改：')
+  assert.deepEqual(message.documents, [
+    { name: 'pasted-content.md', content: firstContent, charCount: firstContent.length },
+    { name: 'selection-2.md', content: secondContent, charCount: secondContent.length },
+  ])
+  assert.equal(threadContainsNewPayload({
+    id: 'thread-one',
+    turns: [
+      userTurn('known-turn', 'known-message', '上一条'),
+      userTurn('turn-one', 'message-one', requestText),
+    ],
+  }, new Set(['known-message']), new Set(['known-turn']), {
+    requestText,
+    images: [],
+    documents: [
+      { name: 'pasted-content.md', content: firstContent },
+      { name: 'selection-2.md', content: secondContent },
+    ],
   }), true)
 })
 
