@@ -143,6 +143,20 @@ test('retries shared queue enqueue with the same durable message ID', async () =
   assert.equal(JSON.parse(attempts[1].init.body).id, queued.id)
 })
 
+test('submits a message once to the server-selected direct-or-queue path', async () => {
+  const queued = {
+    id: 'queued-submit-001', text: '继续', requestText: '继续', images: [],
+    createdAt: '2026-10-13T00:00:00Z',
+  }
+  respondWith(interruptedBody(), jsonResponse({ sent: true, queue: [] }))
+
+  assert.deepEqual(await codexRemoteClient.submitMessage('test-token', 'thread-one', queued), { sent: true, queue: [] })
+  assert.equal(attempts.length, 2)
+  assert.equal(attempts[0].path, '/api/v1/codex/queue/thread-one/submit')
+  assert.equal(attempts[0].init.body, attempts[1].init.body)
+  assert.equal(JSON.parse(attempts[1].init.body).id, queued.id)
+})
+
 test('reads shared pins and changes a pin through authenticated endpoints', async () => {
   respondWith(jsonResponse({ thread_ids: [] }), jsonResponse({ thread_ids: ['thread-one'] }))
 
