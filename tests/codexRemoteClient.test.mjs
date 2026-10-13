@@ -358,3 +358,21 @@ test('renames a thread through the authenticated thread-name API', async () => {
   assert.equal(attempts[0].init.headers.Authorization, 'Bearer test-token')
   assert.deepEqual(JSON.parse(attempts[0].init.body), { name: '项目讨论' })
 })
+
+test('saves workspace file contents through the authenticated file API', async () => {
+  const savedFile = { path: 'src/app.ts', content: 'export {}\n', size: 10, revision: 'a'.repeat(64) }
+  respondWith(jsonResponse(savedFile))
+
+  const result = await codexRemoteClient.saveWorkspaceFile('test-token', '/workspace/project', 'src/app.ts', savedFile.content, 'b'.repeat(64))
+
+  assert.deepEqual(result, savedFile)
+  assert.equal(attempts[0].path, '/api/v1/codex/workspace/file')
+  assert.equal(attempts[0].init.method, 'POST')
+  assert.equal(attempts[0].init.headers.Authorization, 'Bearer test-token')
+  assert.deepEqual(JSON.parse(attempts[0].init.body), {
+    cwd: '/workspace/project',
+    path: 'src/app.ts',
+    content: 'export {}\n',
+    revision: 'b'.repeat(64),
+  })
+})
