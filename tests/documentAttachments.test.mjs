@@ -56,11 +56,11 @@ test('extracts readable worksheet values from XLSX', async () => {
   assert.match(result.content, /小明\t98/)
 })
 
-test('caps extracted text and marks truncation', async () => {
-  const result = await readDocumentAttachment(new File(['界'.repeat(45_000)], 'long.txt', { type: 'text/plain' }))
-  assert.equal(result.truncated, true)
-  assert.ok(result.content.length <= 40_000)
-  assert.match(result.content, /内容过长/)
+test('preserves extracted text beyond the former character limit', async () => {
+  const text = '界'.repeat(45_000)
+  const result = await readDocumentAttachment(new File([text], 'long.txt', { type: 'text/plain' }))
+  assert.equal(result.truncated, false)
+  assert.equal(result.content, text)
 })
 
 test('rejects unsupported and oversized files with actionable messages', async () => {
