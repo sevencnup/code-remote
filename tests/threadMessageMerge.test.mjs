@@ -150,6 +150,27 @@ test('one historical message confirms at most one identical queued request', () 
   assert.deepEqual([...deliveredQueuedMessageIdsFromHistory(queued, [historical])], ['one'])
 })
 
+test('live steer item replaces its optimistic local bubble', () => {
+  const local = userMessage('queued-steer', 'turn-live', '在测试', { sentAt: '2026-10-14T04:14:20.000Z' })
+  const incoming = {
+    ...userMessage('server-steer', 'turn-live', '在测试'),
+    sourceItemId: 'server-steer',
+  }
+
+  assert.deepEqual(insertRemoteUserMessage([local], incoming), [{
+    ...incoming,
+    sentAt: local.sentAt,
+  }])
+})
+
+test('live steer item replaces only the newest matching optimistic bubble', () => {
+  const older = userMessage('queued-older', 'turn-live', '重复')
+  const newest = userMessage('queued-newest', 'turn-live', '重复')
+  const incoming = { ...userMessage('server-newest', 'turn-live', '重复'), sourceItemId: 'server-newest' }
+
+  assert.deepEqual(insertRemoteUserMessage([older, newest], incoming), [older, incoming])
+})
+
 test('an immediate steer matches a later user item in the same turn', () => {
   const original = userMessage('original', 'turn-current', '重复')
   const steer = userMessage('steer', 'turn-current', '重复')
