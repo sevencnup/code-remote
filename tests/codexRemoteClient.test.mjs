@@ -325,6 +325,39 @@ test('renders recent Codex history event messages as visible chat bubbles', () =
   ])
 })
 
+test('renders images from native Codex image_url data URLs in history and live events', () => {
+  const dataUrl = 'data:image/png;base64,aGVsbG8='
+  const content = [
+    { type: 'text', text: '看看这张图' },
+    { type: 'image', image_url: dataUrl },
+  ]
+  const [historyMessage] = messagesFromThread({
+    id: 'thread-one',
+    turns: [{ id: 'turn-one', items: [{ id: 'user-one', type: 'userMessage', content }] }],
+  })
+  const liveMessage = userMessageFromEventItem({ id: 'user-live', type: 'userMessage', content }, 'turn-live')
+
+  assert.equal(historyMessage.text, '看看这张图')
+  assert.deepEqual(historyMessage.images, [{ name: 'image-2', previewUrl: dataUrl }])
+  assert.deepEqual(liveMessage.images, [{ name: 'image-2', previewUrl: dataUrl }])
+})
+
+test('renders normalized Codex localImage data and ignores non-data image URLs', () => {
+  const [message] = messagesFromThread({
+    id: 'thread-one',
+    turns: [{ id: 'turn-one', items: [{
+      id: 'user-one',
+      type: 'userMessage',
+      content: [
+        { type: 'localImage', path: 'C:/private/photo.png', name: 'photo.png', mediaType: 'image/png', data: 'aGVsbG8=' },
+        { type: 'image', image_url: 'https://example.invalid/image.png' },
+      ],
+    }] }],
+  })
+
+  assert.deepEqual(message.images, [{ name: 'photo.png', previewUrl: 'data:image/png;base64,aGVsbG8=' }])
+})
+
 test('uses turn start as the best available historical user send time', () => {
   const startedAt = '2026-10-12T10:15:22.000Z'
   const [message] = messagesFromThread({
