@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/lib/mobilePanelGestures.ts', impor
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { beginMobilePanelGesture, mobileSidebarDragOffset, resolveMobilePanelGesture, shouldOpenMobileSidebarAfterDrag } = await import(
+const { beginMobilePanelGesture, mobileSidebarBackdropOpacity, mobileSidebarDragOffset, resolveMobilePanelGesture, shouldOpenMobileSidebarAfterDrag } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
@@ -51,4 +51,11 @@ test('sidebar follows drag distance and settles to the nearer open or closed sta
   assert.equal(shouldOpenMobileSidebarAfterDrag(-160, 200, null), false)
   assert.equal(shouldOpenMobileSidebarAfterDrag(-160, 200, 'open-sidebar'), true)
   assert.equal(shouldOpenMobileSidebarAfterDrag(-70, 200, 'close-sidebar'), false)
+})
+
+test('sidebar backdrop stays subtle and fades proportionally while dragging', () => {
+  assert.equal(mobileSidebarBackdropOpacity(0), 0)
+  assert.equal(mobileSidebarBackdropOpacity(0.5), 0.1)
+  assert.equal(mobileSidebarBackdropOpacity(1), 0.2)
+  assert.equal(mobileSidebarBackdropOpacity(2), 0.2)
 })

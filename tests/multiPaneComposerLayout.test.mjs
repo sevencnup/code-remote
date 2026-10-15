@@ -51,6 +51,7 @@ test('mobile chat header is shorter without changing the desktop row height', ()
 test('mobile sidebar exposes a no-transition drag state for direct touch tracking', () => {
   assert.ok(styles.includes('.remote-sidebar--dragging { transform: translateX(var(--sidebar-drag-offset, -105%)); transition: none; }'))
   assert.ok(styles.includes('.remote-shell--sidebar-dragging .sidebar-backdrop { transition: none; }'))
+  assert.ok(styles.includes('var(--sidebar-backdrop-opacity, .2)'))
   assert.ok(page.includes("(sidebarDragging ? ' remote-shell--sidebar-dragging' : '')"))
   assert.match(page, /onTouchMoveCapture=\{handleSidebarTouchMove\}/)
   assert.ok(page.includes("style.setProperty('--sidebar-drag-offset'"))
