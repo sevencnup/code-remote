@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/lib/mobilePanelGestures.ts', impor
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { beginMobilePanelGesture, resolveMobilePanelGesture } = await import(
+const { beginMobilePanelGesture, mobileSidebarDragOffset, resolveMobilePanelGesture, shouldOpenMobileSidebarAfterDrag } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
@@ -40,4 +40,15 @@ test('ignores short swipes, vertical movement, and the wrong direction', () => {
   assert.equal(resolveMobilePanelGesture(leftStart, 160, 100), null)
   assert.equal(resolveMobilePanelGesture(leftStart, 5, 20), null)
   assert.equal(resolveMobilePanelGesture(rightStart, 195, 20), null)
+})
+
+test('sidebar follows drag distance and settles to the nearer open or closed state', () => {
+  assert.equal(mobileSidebarDragOffset(false, 200, 50), -160)
+  assert.equal(mobileSidebarDragOffset(false, 200, 400), 0)
+  assert.equal(mobileSidebarDragOffset(true, 200, -50), -50)
+  assert.equal(mobileSidebarDragOffset(true, 200, -400), -210)
+  assert.equal(shouldOpenMobileSidebarAfterDrag(-70, 200, null), true)
+  assert.equal(shouldOpenMobileSidebarAfterDrag(-160, 200, null), false)
+  assert.equal(shouldOpenMobileSidebarAfterDrag(-160, 200, 'open-sidebar'), true)
+  assert.equal(shouldOpenMobileSidebarAfterDrag(-70, 200, 'close-sidebar'), false)
 })

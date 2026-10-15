@@ -47,3 +47,13 @@ test('mobile chat header is shorter without changing the desktop row height', ()
   assert.ok(styles.includes('grid-template-rows: 60px minmax(0, 1fr) auto auto auto'))
   assert.ok(styles.includes('grid-template-rows: 50px minmax(0, 1fr) auto auto auto'))
 })
+
+test('mobile sidebar exposes a no-transition drag state for direct touch tracking', () => {
+  assert.ok(styles.includes('.remote-sidebar--dragging { transform: translateX(var(--sidebar-drag-offset, -105%)); transition: none; }'))
+  assert.ok(styles.includes('.remote-shell--sidebar-dragging .sidebar-backdrop { transition: none; }'))
+  assert.ok(page.includes("(sidebarDragging ? ' remote-shell--sidebar-dragging' : '')"))
+  assert.match(page, /onTouchMoveCapture=\{handleSidebarTouchMove\}/)
+  assert.ok(page.includes("style.setProperty('--sidebar-drag-offset'"))
+  assert.ok(page.includes("style.removeProperty('--sidebar-drag-offset')"))
+  assert.ok(page.includes("const start = startedInsideSidebar\r\n      ? { panel: 'sidebar' as const"))
+})
