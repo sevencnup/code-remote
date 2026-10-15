@@ -1,28 +1,19 @@
-# Branch Integration Development
+# 分支整合记录
 
-## Goal
+## 目标
 
-Integrate the eight local commits on [31mmain[0m with the 29 newer commits on [31morigin/main[0m, preserving both histories and all user-facing behavior.
+将本地开发分支与 `origin/main` 整合，保留双方历史和用户可见功能。推送前远程又新增了移动端侧栏拖动、文件树手势和队列行为修复，也一并纳入。当前版本沿用本地较新的 `0.14.1-dev.2`；Android `versionCode` 沿用远程分支已发布构建的 `123`，本次不生成 APK。
 
-The merged branch restores Windows Codex app-server history sharing and retains the newer remote browser history sync, activity timeline, and system notifications. This adds user-facing capability, so the integrated prerelease is 0.12.0-dev.1. Android versionCode stays unchanged because this merge does not create a new APK.
+## 整合内容
 
-## Plan
+- 保留 Codex 与 Claude Code 双引擎、本机 Claude 历史、Claude CLI 修复和当前模式聊天设置。
+- 保留远程分支的 Windows Codex 历史同步、移动端附件选择优化、审批选择时机修复和消息代码块自动换行。
+- 合并新建 Codex 会话首条消息工作区处理与会话工作区缓存，避免新会话无历史时尝试恢复，同时避免对工作区未变化的旧会话重复恢复。
+- 合并版本记录；对两个分支使用相同预发布号的条目合并描述，避免重复版本标题。
 
-1. Create a merge commit so the local and remote commit histories remain intact.
-2. Resolve conflicts by comparing each side's behavior and combining compatible changes; do not replace whole files with either branch's version without review.
-3. Reconcile version metadata and changelog ordering against the latest remote branch.
-4. Inspect the complete merge diff, run whitespace/conflict-marker checks, and confirm only intended files changed.
-5. Commit the integration locally, then push [31mmain[0m to [31morigin[0m as explicitly requested.
+## 验证与提交
 
-## Conflict review checklist
-
-- [31mCHANGELOG.md[0m: retain remote entries and local entries in newest-first order.
-- [31mandroid/app/build.gradle[0m and [31mpackage.json[0m: retain the latest version and monotonic Android version code.
-- [31mserver/codex_remote/app.py[0m and [31msrc/components/CodexRemotePage.tsx[0m: combine API, runtime, and UI changes from both branches.
-- Inspect app-server/history files and tests for changes that were refactored upstream after the local commits.
-
-## Validation
-
-- [31mgit diff --check[0m reports no whitespace errors or conflict markers.
-- Confirm the merge commit has both the current [31morigin/main[0m and local [31mmain[0m as parents.
-- Do not rewrite or force-push remote history.
+- `git diff --check` 无格式错误；前端生产构建成功；Python 服务代码编译成功。
+- 未运行自动化测试，也未创建 APK。
+- 创建本地合并提交后，确认双方分支均为其父提交，再推送 `main`；不重写远程历史或强推。
+- 保留已有的 `docs/ANDROID_APK_DEVELOPMENT.md` 未提交编辑。
