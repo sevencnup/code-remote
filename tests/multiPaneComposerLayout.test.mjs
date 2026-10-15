@@ -31,6 +31,8 @@ test('image-draft restore and manual resizing do not add transient layout height
 
 test('mobile code blocks wrap long PowerShell commands while desktop keeps horizontal scrolling', () => {
   const codeBlockRule = styles.match(/\.chat-message__code \{([^}]+)\}/)?.[1] ?? ''
+  const contentRule = styles.match(/^\.chat-message__content \{([^}]+)\}/m)?.[1] ?? ''
+  const timelineRule = styles.match(/^\.activity-timeline \{([^}]+)\}/m)?.[1] ?? ''
   const mobileMediaRule = styles.match(/@media \(max-width: 700px\) \{([\s\S]*?)^\}/m)?.[1] ?? ''
   const mobileCodeRule = mobileMediaRule.match(/\.chat-message__code \{([^}]+)\}/)?.[1] ?? ''
 
@@ -39,6 +41,10 @@ test('mobile code blocks wrap long PowerShell commands while desktop keeps horiz
   assert.match(codeBlockRule, /box-sizing:\s*border-box/)
   assert.match(codeBlockRule, /width:\s*100%/)
   assert.match(codeBlockRule, /max-width:\s*100%/)
+  assert.match(contentRule, /min-width:\s*0/)
+  assert.match(contentRule, /max-width:\s*100%/)
+  assert.match(contentRule, /overflow:\s*hidden/)
+  assert.match(timelineRule, /max-width:\s*100%/)
   assert.match(mobileCodeRule, /white-space:\s*pre-wrap/)
   assert.match(mobileCodeRule, /overflow-wrap:\s*anywhere/)
 })
@@ -68,4 +74,15 @@ test('mobile workspace drawer follows touch position and keeps its backdrop sync
   assert.ok(page.includes("style.setProperty('--workspace-drag-offset'"))
   assert.ok(page.includes('mobileWorkspaceDragOffset(workspaceOpen, workspace.panelWidth, deltaX)'))
   assert.ok(page.includes('shouldOpenMobileWorkspaceAfterDrag(workspace.offset, workspace.panelWidth, action)'))
+})
+
+test('workspace settle keeps the drag backdrop value until the snap transition starts', () => {
+  const settleStart = page.indexOf('const shouldOpen = shouldOpenMobileWorkspaceAfterDrag')
+  const settleEnd = page.indexOf('if (!action) return', settleStart)
+  const settle = page.slice(settleStart, settleEnd)
+  const stopDragging = settle.indexOf('setWorkspaceDragging(false)')
+  const clearBackdrop = settle.indexOf("removeProperty('--workspace-backdrop-opacity')")
+
+  assert.ok(stopDragging >= 0)
+  assert.ok(clearBackdrop > stopDragging)
 })
