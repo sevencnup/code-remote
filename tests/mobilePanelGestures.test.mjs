@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/lib/mobilePanelGestures.ts', impor
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { beginMobilePanelGesture, mobileSidebarBackdropOpacity, mobileSidebarDragOffset, resolveMobilePanelGesture, shouldOpenMobileSidebarAfterDrag } = await import(
+const { beginMobilePanelGesture, mobileSidebarBackdropOpacity, mobileSidebarDragOffset, mobileWorkspaceDragOffset, resolveMobilePanelGesture, shouldOpenMobileSidebarAfterDrag, shouldOpenMobileWorkspaceAfterDrag } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
@@ -58,4 +58,15 @@ test('sidebar backdrop stays subtle and fades proportionally while dragging', ()
   assert.equal(mobileSidebarBackdropOpacity(0.5), 0.1)
   assert.equal(mobileSidebarBackdropOpacity(1), 0.2)
   assert.equal(mobileSidebarBackdropOpacity(2), 0.2)
+})
+
+test('workspace drawer follows drag distance and settles to the nearer open or closed state', () => {
+  assert.equal(mobileWorkspaceDragOffset(false, 200, -50), 160)
+  assert.equal(mobileWorkspaceDragOffset(false, 200, -400), 0)
+  assert.equal(mobileWorkspaceDragOffset(true, 200, 50), 50)
+  assert.equal(mobileWorkspaceDragOffset(true, 200, 400), 210)
+  assert.equal(shouldOpenMobileWorkspaceAfterDrag(70, 200, null), true)
+  assert.equal(shouldOpenMobileWorkspaceAfterDrag(160, 200, null), false)
+  assert.equal(shouldOpenMobileWorkspaceAfterDrag(160, 200, 'open-workspace'), true)
+  assert.equal(shouldOpenMobileWorkspaceAfterDrag(70, 200, 'close-workspace'), false)
 })

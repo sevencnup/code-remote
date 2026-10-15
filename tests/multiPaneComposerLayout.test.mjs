@@ -58,3 +58,14 @@ test('mobile sidebar exposes a no-transition drag state for direct touch trackin
   assert.ok(page.includes("style.removeProperty('--sidebar-drag-offset')"))
   assert.ok(page.includes("const start = startedInsideSidebar\r\n      ? { panel: 'sidebar' as const"))
 })
+
+test('mobile workspace drawer follows touch position and keeps its backdrop synchronized', () => {
+  assert.ok(styles.includes('.workspace-explorer--dragging { transform: translateX(var(--workspace-drag-offset, 105%)); transition: none; }'))
+  assert.ok(styles.includes('.remote-shell--workspace-dragging .workspace-backdrop { transition: none; }'))
+  assert.ok(styles.includes('var(--workspace-backdrop-opacity, .2)'))
+  assert.ok(page.includes("(workspaceDragging ? ' remote-shell--workspace-dragging' : '')"))
+  assert.ok(page.includes('mobileDragging={workspaceDragging}'))
+  assert.ok(page.includes("style.setProperty('--workspace-drag-offset'"))
+  assert.ok(page.includes('mobileWorkspaceDragOffset(workspaceOpen, workspace.panelWidth, deltaX)'))
+  assert.ok(page.includes('shouldOpenMobileWorkspaceAfterDrag(workspace.offset, workspace.panelWidth, action)'))
+})
