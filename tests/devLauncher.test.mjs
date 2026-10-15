@@ -54,3 +54,22 @@ test('one-click batch launchers delegate Codex CLI selection to the shared launc
     )
   }
 })
+
+test('Windows background service is independent and restarts after failure', async () => {
+  const installer = await readFile(
+    fileURLToPath(new URL('../scripts/install-windows-service.ps1', import.meta.url)),
+    'utf8',
+  )
+  const runner = await readFile(
+    fileURLToPath(new URL('../scripts/run-windows-service.ps1', import.meta.url)),
+    'utf8',
+  )
+
+  assert.match(installer, /New-ScheduledTaskTrigger -AtLogOn/)
+  assert.match(installer, /-RestartCount 999/)
+  assert.match(installer, /-ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/)
+  assert.match(installer, /-LogonType Interactive -RunLevel Limited/)
+  assert.match(runner, /& \$env:COMSPEC \/d \/s \/c \$commandLine/)
+  assert.match(runner, /UTF8Encoding\(\$false\)/)
+  assert.match(runner, /windows-service\.log/)
+})
