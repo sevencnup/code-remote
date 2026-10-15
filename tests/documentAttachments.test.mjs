@@ -17,8 +17,15 @@ const parserSource = compile(await readFile(new URL('../src/lib/documentAttachme
   .replace(/import\(["']@e965\/xlsx["']\)/, `import('${import.meta.resolve('@e965/xlsx')}')`)
   .replace(/import\(["']pdfjs-dist["']\)/, `import('${import.meta.resolve('pdfjs-dist')}')`)
 const parserUrl = `data:text/javascript;base64,${Buffer.from(parserSource).toString('base64')}`
-const { isSupportedDocumentFile } = await import(rulesUrl)
+const { attachmentAcceptForLayout, documentAttachmentAccept, isSupportedDocumentFile } = await import(rulesUrl)
 const { readDocumentAttachment } = await import(parserUrl)
+
+test('mobile file pickers avoid large accept filters while desktop keeps supported document types', () => {
+  assert.equal(attachmentAcceptForLayout(true), undefined)
+  assert.equal(attachmentAcceptForLayout(false), documentAttachmentAccept)
+  assert.ok(documentAttachmentAccept.includes('.docx'))
+  assert.ok(documentAttachmentAccept.includes('.tsx'))
+})
 
 test('accepts common documents, data formats, source files, and dotfiles', () => {
   const supportedNames = [

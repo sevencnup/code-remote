@@ -21,9 +21,10 @@ beforeEach(() => {
   globalThis.window = {
     setTimeout(callback, delay) {
       delays.push(delay)
-      queueMicrotask(callback)
+      if (delay < 10_000) queueMicrotask(callback)
       return delays.length
     },
+    clearTimeout() {},
   }
 })
 
@@ -114,9 +115,8 @@ test('reports an unavailable runtime instead of staying connecting when the WebS
 
   assert.equal(firePendingTimer(), 60_000)
   assert.equal(states.at(-1), 'unavailable')
-  assert.equal(events.at(-1).type, 'connection')
-  assert.equal(events.at(-1).connected, false)
-  assert.match(events.at(-1).error, /Codex 引擎连接超时/)
+  assert.equal(events.at(-1).type, 'error')
+  assert.match(events.at(-1).message, /连接服务器超时/)
   assert.equal(webSocket.readyState, FakeWebSocket.CLOSED)
 
   socket.close()
@@ -360,6 +360,39 @@ test('renders recent Codex history event messages as visible chat bubbles', () =
     { role: 'user', text: '读取不到聊天', turnId: 'turn-one' },
     { role: 'assistant', text: '正在检查历史解析。', turnId: 'turn-one' },
   ])
+})
+
+test('renders images from native Codex image_url data URLs in history and live events', () => {
+  const dataUrl = 'data:image/png;base64,aGVsbG8='
+  const content = [
+    { type: 'text', text: '看看这张图' },
+    { type: 'image', image_url: dataUrl },
+  ]
+  const [historyMessage] = messagesFromThread({
+    id: 'thread-one',
+    turns: [{ id: 'turn-one', items: [{ id: 'user-one', type: 'userMessage', content }] }],
+  })
+  const liveMessage = userMessageFromEventItem({ id: 'user-live', type: 'userMessage', content }, 'turn-live')
+
+  assert.equal(historyMessage.text, '看看这张图')
+  assert.deepEqual(historyMessage.images, [{ name: 'image-2', previewUrl: dataUrl }])
+  assert.deepEqual(liveMessage.images, [{ name: 'image-2', previewUrl: dataUrl }])
+})
+
+test('renders normalized Codex localImage data and ignores non-data image URLs', () => {
+  const [message] = messagesFromThread({
+    id: 'thread-one',
+    turns: [{ id: 'turn-one', items: [{
+      id: 'user-one',
+      type: 'userMessage',
+      content: [
+        { type: 'localImage', path: 'C:/private/photo.png', name: 'photo.png', mediaType: 'image/png', data: 'aGVsbG8=' },
+        { type: 'image', image_url: 'https://example.invalid/image.png' },
+      ],
+    }] }],
+  })
+
+  assert.deepEqual(message.images, [{ name: 'photo.png', previewUrl: 'data:image/png;base64,aGVsbG8=' }])
 })
 
 test('uses turn start as the best available historical user send time', () => {

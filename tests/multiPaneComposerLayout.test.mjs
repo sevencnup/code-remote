@@ -10,7 +10,7 @@ test('multi-pane queue placeholder uses the real collapsed card geometry', () =>
   assert.ok(page.includes('className={`composer-queue${queuedMessagesExpanded ? \' composer-queue--expanded\' : \' composer-queue--collapsed\'}`}'))
   assert.ok(styles.includes('.composer-queue--placeholder { visibility: hidden; pointer-events: none; }'))
   assert.ok(!styles.includes('composer-queue-spacer'))
-  assert.ok(page.includes('reserveQueuedMessageSpace && !mobileLayout && queuedMessages.length === 0'))
+  assert.ok(page.includes(') : reserveQueuedMessageSpace ? ('))
 })
 
 test('running file changes reserve a matching slot across open panes', () => {
@@ -27,4 +27,18 @@ test('image-draft restore and manual resizing do not add transient layout height
   assert.ok(page.includes("!imagesReady ? '正在恢复待发送图片…'"))
   assert.ok(page.includes('if (composerHeightMemory.current?.manuallyResized) return composerHeightMemory.current.height'))
   assert.ok(page.includes('composerHeightMemory.current = { height: composerHeight, manuallyResized: composerHeightWasResized.current }'))
+})
+
+test('mobile code blocks wrap long PowerShell commands while desktop keeps horizontal scrolling', () => {
+  const codeBlockRule = styles.match(/\.chat-message__code \{([^}]+)\}/)?.[1] ?? ''
+  const mobileMediaRule = styles.match(/@media \(max-width: 700px\) \{([\s\S]*?)^\}/m)?.[1] ?? ''
+  const mobileCodeRule = mobileMediaRule.match(/\.chat-message__code \{([^}]+)\}/)?.[1] ?? ''
+
+  assert.match(codeBlockRule, /overflow:\s*auto/)
+  assert.match(codeBlockRule, /white-space:\s*pre(?:;|\s)/)
+  assert.match(codeBlockRule, /box-sizing:\s*border-box/)
+  assert.match(codeBlockRule, /width:\s*100%/)
+  assert.match(codeBlockRule, /max-width:\s*100%/)
+  assert.match(mobileCodeRule, /white-space:\s*pre-wrap/)
+  assert.match(mobileCodeRule, /overflow-wrap:\s*anywhere/)
 })

@@ -14,7 +14,7 @@ test('Windows launcher preserves an explicitly configured isolated Codex runtime
   )
 })
 
-test('Windows launcher prefers the managed daemon CLI before PATH and VS Code fallbacks', async () => {
+test('Windows launcher prefers the PATH Codex CLI before managed and VS Code fallbacks', async () => {
   const launcher = fileURLToPath(new URL('../scripts/dev.mjs', import.meta.url))
   const source = await readFile(launcher, 'utf8')
 
@@ -25,8 +25,8 @@ test('Windows launcher prefers the managed daemon CLI before PATH and VS Code fa
   assert.notEqual(managedDaemon, -1, 'the launcher must inspect the managed daemon CLI')
   assert.notEqual(pathCandidates, -1, 'the launcher must inspect Codex executables on PATH')
   assert.notEqual(vscodeCandidates, -1, 'the launcher must keep the VS Code fallback')
-  assert.ok(managedDaemon < pathCandidates, 'the managed daemon CLI must be preferred over PATH wrappers')
-  assert.ok(pathCandidates < vscodeCandidates, 'the PATH CLI must be preferred over the VS Code fallback')
+  assert.ok(pathCandidates < managedDaemon, 'the PATH CLI used by the terminal must be preferred')
+  assert.ok(managedDaemon < vscodeCandidates, 'the managed CLI must be preferred over the VS Code fallback')
 })
 
 test('one-click batch launchers delegate Codex CLI selection to the shared launcher', async () => {

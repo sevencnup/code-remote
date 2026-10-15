@@ -21,6 +21,8 @@ const defaultPreferences = {
   customBackgroundColor: '#4b5563',
   customTextColor: '#f1f5f9',
   customBackgroundTransparency: 0,
+  fontSizeAdjustment: 0,
+  systemNotificationsEnabled: false,
 }
 
 async function withLocalStorage(storage, run) {
@@ -61,6 +63,8 @@ test('normalizes stored theme values and ignores invalid background images', asy
       customBackgroundColor: '#A1B2C3',
       customTextColor: defaultPreferences.customTextColor,
       customBackgroundTransparency: 100,
+      fontSizeAdjustment: 0,
+      systemNotificationsEnabled: false,
     })
   })
 })
@@ -76,6 +80,8 @@ test('round-trips saved theme preferences through local storage', async () => {
     customBackgroundColor: '#123456',
     customTextColor: '#ABCDEF',
     customBackgroundTransparency: 42,
+    fontSizeAdjustment: 0,
+    systemNotificationsEnabled: false,
   }
 
   await withLocalStorage(storage, async () => {
@@ -116,6 +122,7 @@ test('generates consistent global custom-theme CSS variables', () => {
     '--custom-theme-active': 'rgba(51, 102, 153, 0.24)',
     '--custom-theme-border': 'rgba(170, 187, 204, 0.32)',
     '--custom-theme-panel-blur': '8px',
+    '--user-font-offset': '0px',
   })
 })
 
