@@ -2,7 +2,7 @@
 
 ## 目标与分类
 
-以手机浏览器移动端为视觉和交互基准，使用 Kotlin 原生 Android 界面重做 APP。APP 不加载 React 页面，不用 WebView 绘制聊天输入框；消息输入采用 Android 原生控件，由系统输入法直接处理。本次保持用户现有任务能力，主要解决 APP 输入、页面体验和同步流量问题，归类为 PATCH，目标版本 `0.18.1-dev.2`，Android `versionCode` 为 `133`。
+以手机浏览器移动端为视觉和交互基准，使用 Kotlin 原生 Android 界面重做 APP。APP 不加载 React 页面，不用 WebView 绘制聊天输入框；消息输入采用 Android 原生控件，由系统输入法直接处理。本次保持用户现有任务能力，主要解决 APP 输入、页面体验、同步流量和首次配对问题，归类为 PATCH，目标版本 `0.18.1-dev.3`，Android `versionCode` 为 `134`。
 
 ## 架构边界
 
