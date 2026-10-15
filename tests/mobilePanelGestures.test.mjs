@@ -18,6 +18,7 @@ test('locks the gesture target to the half where the touch starts', () => {
   assert.equal(leftStart?.panel, 'sidebar')
   assert.equal(rightStart?.panel, 'workspace')
   assert.equal(resolveMobilePanelGesture(leftStart, 170, 20), 'open-sidebar')
+  assert.equal(resolveMobilePanelGesture(leftStart, 145, 20), 'open-sidebar')
   assert.equal(resolveMobilePanelGesture(rightStart, 29, 20), 'open-workspace')
 })
 
@@ -35,7 +36,7 @@ test('ignores short swipes, vertical movement, and the wrong direction', () => {
   const leftStart = beginMobilePanelGesture(80, 20, 200, false, false)
   const rightStart = beginMobilePanelGesture(120, 20, 200, false, false)
 
-  assert.equal(resolveMobilePanelGesture(leftStart, 135, 20), null)
+  assert.equal(resolveMobilePanelGesture(leftStart, 123, 20), null)
   assert.equal(resolveMobilePanelGesture(leftStart, 160, 100), null)
   assert.equal(resolveMobilePanelGesture(leftStart, 5, 20), null)
   assert.equal(resolveMobilePanelGesture(rightStart, 195, 20), null)

@@ -42,3 +42,8 @@ test('mobile code blocks wrap long PowerShell commands while desktop keeps horiz
   assert.match(mobileCodeRule, /white-space:\s*pre-wrap/)
   assert.match(mobileCodeRule, /overflow-wrap:\s*anywhere/)
 })
+
+test('mobile chat header is shorter without changing the desktop row height', () => {
+  assert.ok(styles.includes('grid-template-rows: 60px minmax(0, 1fr) auto auto auto'))
+  assert.ok(styles.includes('grid-template-rows: 50px minmax(0, 1fr) auto auto auto'))
+})
