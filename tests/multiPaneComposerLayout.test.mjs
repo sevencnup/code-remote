@@ -10,7 +10,7 @@ test('multi-pane queue placeholder uses the real collapsed card geometry', () =>
   assert.ok(page.includes('className={`composer-queue${queuedMessagesExpanded ? \' composer-queue--expanded\' : \' composer-queue--collapsed\'}`}'))
   assert.ok(styles.includes('.composer-queue--placeholder { visibility: hidden; pointer-events: none; }'))
   assert.ok(!styles.includes('composer-queue-spacer'))
-  assert.ok(page.includes('reserveQueuedMessageSpace && !mobileLayout && queuedMessages.length === 0'))
+  assert.ok(page.includes(') : reserveQueuedMessageSpace ? ('))
 })
 
 test('running file changes reserve a matching slot across open panes', () => {

@@ -21,9 +21,10 @@ beforeEach(() => {
   globalThis.window = {
     setTimeout(callback, delay) {
       delays.push(delay)
-      queueMicrotask(callback)
+      if (delay < 10_000) queueMicrotask(callback)
       return delays.length
     },
+    clearTimeout() {},
   }
 })
 
@@ -114,9 +115,8 @@ test('reports an unavailable runtime instead of staying connecting when the WebS
 
   assert.equal(firePendingTimer(), 60_000)
   assert.equal(states.at(-1), 'unavailable')
-  assert.equal(events.at(-1).type, 'connection')
-  assert.equal(events.at(-1).connected, false)
-  assert.match(events.at(-1).error, /Codex 引擎连接超时/)
+  assert.equal(events.at(-1).type, 'error')
+  assert.match(events.at(-1).message, /连接服务器超时/)
   assert.equal(webSocket.readyState, FakeWebSocket.CLOSED)
 
   socket.close()
@@ -134,6 +134,43 @@ function respondWith(...responses) {
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
+
+test('overlapping panes share list and history reads without retaining stale responses', async () => {
+  let finish
+  globalThis.fetch = (path) => {
+    attempts.push(path)
+    return new Promise((resolve) => { finish = resolve })
+  }
+  const first = codexRemoteClient.threads('shared-token')
+  const second = codexRemoteClient.threads('shared-token')
+  assert.equal(attempts.length, 1)
+  finish(jsonResponse([{ id: 'thread' }]))
+  assert.deepEqual(await first, await second)
+  const a = codexRemoteClient.readThread('shared-token', 'thread')
+  const b = codexRemoteClient.readThread('shared-token', 'thread')
+  assert.equal(attempts.length, 2)
+  finish(jsonResponse({ id: 'thread', turns: [] }))
+  assert.deepEqual(await a, await b)
+  const later = codexRemoteClient.readThread('shared-token', 'thread')
+  assert.equal(attempts.length, 3)
+  finish(jsonResponse({ id: 'thread', turns: [{ id: 'new-turn' }] }))
+  assert.equal((await later).turns[0].id, 'new-turn')
+})
+
+test('thread subscriptions follow selection and remain compatible with an older server', () => {
+  const { FakeWebSocket } = installFakeWebSocket()
+  const client = codexRemoteClient.connect('test-token', () => {}, () => {}, 'first')
+  const socket = FakeWebSocket.instances[0]
+  socket.emit('open')
+  assert.equal(JSON.parse(socket.sent[0]).thread_id, 'first')
+  client.subscribeThread('second')
+  assert.equal(socket.sent.length, 1, 'do not send an unsupported message before capability negotiation')
+  socket.emit('message', { data: JSON.stringify({ type: 'connection', connected: true, threadSubscriptions: true }) })
+  assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: 'thread.subscribe', thread_id: 'second' })
+  client.subscribeThread(null)
+  assert.equal(JSON.parse(socket.sent.at(-1)).thread_id, null)
+  client.close()
+})
 
 function interruptedBody() {
   return new Response(new ReadableStream({

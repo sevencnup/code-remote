@@ -27,7 +27,24 @@ const {
   'writeThreadHistoryCache',
   'serializedCacheSizeBytes',
 ])
-const { canUseCachedThreadHistory } = await importTypeScript('../src/lib/threadHistoryPolicy.ts', ['canUseCachedThreadHistory'])
+const { canUseCachedThreadHistory, threadHistoryVersionChanged } = await importTypeScript('../src/lib/threadHistoryPolicy.ts', ['canUseCachedThreadHistory', 'threadHistoryVersionChanged'])
+
+test('content revisions detect same-second changes without reloading for inconsistent previews', () => {
+  const cached = { complete: true, running: false, updatedAt: 100, historyRevision: '100:200', preview: 'last message' }
+  const latest = { updatedAt: 100, historyRevision: '100:200', preview: 'first message' }
+  assert.equal(threadHistoryVersionChanged(cached, latest), false)
+  assert.equal(canUseCachedThreadHistory(cached, latest, true, false), true)
+  assert.equal(threadHistoryVersionChanged(cached, { ...latest, historyRevision: '100:250' }), true)
+  assert.equal(canUseCachedThreadHistory(cached, { ...latest, historyRevision: '100:250' }, true, false), false)
+  assert.equal(threadHistoryVersionChanged({ updatedAt: 100, preview: 'last' }, { updatedAt: 100, preview: 'first' }), false)
+})
+
+test('an older persisted cache must acquire a server revision before it can be reused', () => {
+  const cached = { complete: true, running: false, updatedAt: 100 }
+  const latest = { updatedAt: 100, historyRevision: '100:200' }
+  assert.equal(threadHistoryVersionChanged(cached, latest), true)
+  assert.equal(canUseCachedThreadHistory(cached, latest, true, false), false)
+})
 
 test('keeps only the five most recently used histories within the byte budget', () => {
   const records = Array.from({ length: 7 }, (_, index) => ({

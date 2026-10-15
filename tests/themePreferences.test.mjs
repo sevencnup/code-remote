@@ -22,6 +22,7 @@ const defaultPreferences = {
   customTextColor: '#f1f5f9',
   customBackgroundTransparency: 0,
   fontSizeAdjustment: 0,
+  systemNotificationsEnabled: false,
 }
 
 async function withLocalStorage(storage, run) {
@@ -63,6 +64,7 @@ test('normalizes stored theme values and ignores invalid background images', asy
       customTextColor: defaultPreferences.customTextColor,
       customBackgroundTransparency: 100,
       fontSizeAdjustment: 0,
+      systemNotificationsEnabled: false,
     })
   })
 })
@@ -79,6 +81,7 @@ test('round-trips saved theme preferences through local storage', async () => {
     customTextColor: '#ABCDEF',
     customBackgroundTransparency: 42,
     fontSizeAdjustment: 0,
+    systemNotificationsEnabled: false,
   }
 
   await withLocalStorage(storage, async () => {
