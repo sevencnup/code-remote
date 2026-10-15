@@ -14,6 +14,19 @@ test('Windows launcher preserves an explicitly configured isolated Codex runtime
   )
 })
 
+test('Windows launchers fall back to Python from PATH when the project venv is absent', async () => {
+  for (const relativePath of ['../scripts/dev.mjs', '../scripts/engine-dev.mjs']) {
+    const launcher = fileURLToPath(new URL(relativePath, import.meta.url))
+    const source = await readFile(launcher, 'utf8')
+
+    assert.match(
+      source,
+      /isWindows \? 'python' : null/,
+      `${relativePath} must support a Windows PATH Python fallback`,
+    )
+  }
+})
+
 test('Windows launcher prefers the PATH Codex CLI before managed and VS Code fallbacks', async () => {
   const launcher = fileURLToPath(new URL('../scripts/dev.mjs', import.meta.url))
   const source = await readFile(launcher, 'utf8')
