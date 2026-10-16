@@ -5,7 +5,7 @@ import { test } from 'node:test'
 const pageSource = await readFile(new URL('../src/components/CodexRemotePage.tsx', import.meta.url), 'utf8')
 const stylesSource = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8')
 
-test('assistant messages use the active pane engine name', () => {
+test('assistant labels and Claude accents follow the active pane engine', () => {
   assert.match(pageSource, /assistantName=\{activeEngineLabel\}/)
   assert.match(pageSource, /const activeEngineLabel = remote\.activeEngine === 'claude-code' \? 'Claude Code' : 'Codex'/)
   assert.match(pageSource, /assistantName: string/)
@@ -19,4 +19,9 @@ test('assistant messages use the active pane engine name', () => {
   assert.match(stylesSource, /\.remote-shell--theme-light \.remote-chat:not\(\.remote-chat--claude\) \.chat-message--user \.chat-message__body,\s*\.remote-shell--theme-warm \.remote-chat:not\(\.remote-chat--claude\) \.chat-message--user \.chat-message__body \{ background: rgba\(200, 208, 255, \.28\); \}/)
   assert.match(stylesSource, /\.remote-chat--claude \.chat-message--user \.chat-message__body \{ border: 0; background: rgba\(217, 119, 87, \.32\); \}/)
   assert.match(stylesSource, /\.remote-shell--theme-light \.remote-chat--claude \.chat-message--user \.chat-message__body,\s*\.remote-shell--theme-warm \.remote-chat--claude \.chat-message--user \.chat-message__body \{ background: rgba\(217, 119, 87, \.28\); \}/)
+  assert.match(pageSource, /isClaudeCodeThread \? ' remote-shell--claude-mode' : ''/)
+  assert.match(stylesSource, /\.remote-shell--claude-mode \.new-thread-button__icon \{ background: rgba\(238, 140, 109, \.18\); color: #ee8c6d; \}/)
+  assert.match(stylesSource, /\.remote-shell--claude-mode \.thread-row \.engine-brand-icon--claude-code \{ background-color: #ee8c6d; color: #ee8c6d; \}/)
+  assert.match(pageSource, /remote\.activeEngine === 'claude-code' && !currentRunningOperation && \(!remote\.activity \|\| remote\.activity\.label === '正在思考'\)/)
+  assert.match(stylesSource, /\.running-indicator__activity--claude-thinking \.operation-activity__text \{ background-image: none; color: #ee8c6d; animation: none; -webkit-text-fill-color: #ee8c6d; \}/)
 })
