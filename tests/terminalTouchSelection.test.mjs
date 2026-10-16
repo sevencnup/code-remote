@@ -36,19 +36,23 @@ test('restores selections spanning wrapped terminal rows', () => {
   assert.deepEqual(calls, [[72, 4, 13]])
 })
 
-test('defers touch selection restoration until xterm document handlers finish', () => {
+test('keeps the selected text for a later context-menu action', () => {
   const longPressCapture = componentSource.slice(
     componentSource.indexOf('longPressTimer = window.setTimeout(() => {'),
     componentSource.indexOf('    const handleTouchMove', componentSource.indexOf('longPressTimer = window.setTimeout(() => {')),
   )
   const touchEnd = componentSource.slice(
     componentSource.indexOf('    const handleTouchEnd = () => {'),
-    componentSource.indexOf('    const handleTouchCancel', componentSource.indexOf('    const handleTouchEnd = () => {')),
+    componentSource.indexOf('    const handleMouseUp', componentSource.indexOf('    const handleTouchEnd = () => {')),
+  )
+  const contextMenu = componentSource.slice(
+    componentSource.indexOf('    const handleContextMenu = (event: MouseEvent) => {'),
+    componentSource.indexOf('    container.addEventListener(\'contextmenu\'', componentSource.indexOf('    const handleContextMenu = (event: MouseEvent) => {')),
   )
 
-  assert.match(longPressCapture, /text = terminal\.getSelection\(\)/)
-  assert.match(longPressCapture, /range = terminal\.getSelectionPosition\(\)/)
-  assert.match(touchEnd, /queueMicrotask\(/)
-  assert.match(touchEnd, /restoreTerminalTouchSelection\(terminal, selection\)/)
-  assert.match(touchEnd, /showContextMenu\(selection\.point\.x, selection\.point\.y, selectedText\)/)
+  assert.match(longPressCapture, /longPressSelection = cacheTerminalSelection\(point\)/)
+  assert.match(touchEnd, /restoreSelectionAfterRelease\(selection\)/)
+  assert.doesNotMatch(touchEnd, /showContextMenu/)
+  assert.match(contextMenu, /cacheTerminalSelection\(\) \?\? lastTerminalSelection/)
+  assert.match(contextMenu, /showContextMenu\(event\.clientX, event\.clientY, selection\.text\)/)
 })
