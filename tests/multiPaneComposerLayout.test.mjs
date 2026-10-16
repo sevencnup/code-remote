@@ -13,6 +13,16 @@ test('multi-pane queue placeholder uses the real collapsed card geometry', () =>
   assert.ok(page.includes(') : reserveQueuedMessageSpace ? ('))
 })
 
+test('stream updates keep the composer send callback stable', () => {
+  assert.match(page, /const remotes = \[remote0, remote1, remote2, remote3, remote4\]\s+const remotesRef = useRef\(remotes\)\s+remotesRef\.current = remotes/)
+  const callback = page.match(/const sendComposerMessage = useCallback\(async \(input: ComposerSendInput\) => \{([\s\S]*?)\n  \}, \[([^\]]*)\]\)/)
+  assert.ok(callback)
+  assert.match(callback[1], /remotesRef\.current\[selectedPaneIndex\]/)
+  for (const remote of ['remote0', 'remote1', 'remote2', 'remote3', 'remote4']) {
+    assert.doesNotMatch(callback[2], new RegExp(`\\b${remote}\\b`))
+  }
+})
+
 test('running file changes reserve a matching slot across open panes', () => {
   assert.ok(page.includes('remote.fileChangesByTurn[remote.runningTurnId]?.some((change) => change.changes.length > 0)'))
   assert.ok(page.includes('reserveFileChangeSummarySpace={openPaneIndexes.length > 1 && Boolean(hasRunningFileChangesInOpenPanes)}'))
