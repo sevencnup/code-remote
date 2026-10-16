@@ -17,5 +17,6 @@ test('assistant messages use the active pane engine name', () => {
   assert.match(stylesSource, /\.remote-shell \.chat-message--assistant \.chat-message__meta > \.chat-message__assistant-name--claude \{ color: #ee8c6d; \}/)
   assert.match(stylesSource, /\.remote-shell \.remote-chat:not\(\.remote-chat--claude\) \.chat-message--user \.chat-message__body \{ border: 0; background: rgba\(200, 208, 255, \.32\); \}/)
   assert.match(stylesSource, /\.remote-shell--theme-light \.remote-chat:not\(\.remote-chat--claude\) \.chat-message--user \.chat-message__body,\s*\.remote-shell--theme-warm \.remote-chat:not\(\.remote-chat--claude\) \.chat-message--user \.chat-message__body \{ background: rgba\(200, 208, 255, \.28\); \}/)
-  assert.match(stylesSource, /\.remote-shell \.remote-chat--claude \.chat-message--user \.chat-message__body \{ border: 1px solid #ee8c6d; \}/)
+  assert.match(stylesSource, /\.remote-chat--claude \.chat-message--user \.chat-message__body \{ border: 0; background: rgba\(217, 119, 87, \.32\); \}/)
+  assert.match(stylesSource, /\.remote-shell--theme-light \.remote-chat--claude \.chat-message--user \.chat-message__body,\s*\.remote-shell--theme-warm \.remote-chat--claude \.chat-message--user \.chat-message__body \{ background: rgba\(217, 119, 87, \.28\); \}/)
 })
