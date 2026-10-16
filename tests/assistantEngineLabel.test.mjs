@@ -4,6 +4,7 @@ import { test } from 'node:test'
 
 const pageSource = await readFile(new URL('../src/components/CodexRemotePage.tsx', import.meta.url), 'utf8')
 const stylesSource = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8')
+const androidSource = await readFile(new URL('../android/app/src/main/kotlin/com/sevencnup/codexremote/MainActivity.kt', import.meta.url), 'utf8')
 
 test('assistant labels and Claude accents follow the active pane engine', () => {
   assert.match(pageSource, /assistantName=\{activeEngineLabel\}/)
@@ -24,4 +25,11 @@ test('assistant labels and Claude accents follow the active pane engine', () => 
   assert.match(stylesSource, /\.remote-shell--claude-mode \.thread-row \.engine-brand-icon--claude-code \{ background-color: #ee8c6d; color: #ee8c6d; \}/)
   assert.match(pageSource, /remote\.activeEngine === 'claude-code' && !currentRunningOperation && \(!remote\.activity \|\| remote\.activity\.label === '正在思考'\)/)
   assert.match(stylesSource, /\.running-indicator__activity--claude-thinking \.operation-activity__text \{ background-image: none; color: #ee8c6d; animation: none; -webkit-text-fill-color: #ee8c6d; \}/)
+})
+
+test('new conversation welcome titles use the active engine name', () => {
+  assert.match(pageSource, /WelcomeTypingTitle text=\{remote\.activeEngine === 'claude-code' \? '与 Claude Code 完成一个伟大项目' : '与 Codex 完成一个伟大项目'\}/)
+  assert.match(androidSource, /if \(currentMode == "claude-code"\) \{\s*"与 Claude Code 完成一个伟大项目"\s*\} else \{\s*"与 Codex 完成一个伟大项目"/)
+  assert.doesNotMatch(pageSource, /与 Codex Remote 完成一个伟大项目/)
+  assert.doesNotMatch(androidSource, /与 Codex Remote 完成一个伟大项目/)
 })
