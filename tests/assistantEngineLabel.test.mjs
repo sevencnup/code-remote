@@ -14,5 +14,5 @@ test('assistant messages use the active pane engine name', () => {
   assert.doesNotMatch(pageSource, /message\.role === 'assistant' \? <strong>Codex<\/strong>/)
   assert.match(pageSource, /chat-message__assistant-name--\$\{assistantName === 'Claude Code' \? 'claude' : 'codex'\}/)
   assert.match(stylesSource, /\.remote-shell \.chat-message--assistant \.chat-message__meta > \.chat-message__assistant-name--codex \{ color: #c8d0ff; \}/)
-  assert.match(stylesSource, /\.remote-shell \.chat-message--assistant \.chat-message__meta > \.chat-message__assistant-name--claude \{ color: #f38662; \}/)
+  assert.match(stylesSource, /\.remote-shell \.chat-message--assistant \.chat-message__meta > \.chat-message__assistant-name--claude \{ color: #ee8c6d; \}/)
 })
