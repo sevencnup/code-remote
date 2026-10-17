@@ -90,6 +90,20 @@ test('round-trips saved theme preferences through local storage', async () => {
   })
 })
 
+test('recognizes and persists the retro web theme', async () => {
+  const values = new Map([['codex-remote.theme-preferences', JSON.stringify({ ...defaultPreferences, theme: 'retro' })]])
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  }
+
+  await withLocalStorage(storage, async () => {
+    assert.equal(readThemePreferences().theme, 'retro')
+    saveThemePreferences({ ...defaultPreferences, theme: 'retro' })
+    assert.equal(readThemePreferences().theme, 'retro')
+  })
+})
+
 test('normalizes colors and clamps transparency', () => {
   assert.equal(normalizeHexColor('#aBc123', '#000000'), '#ABC123')
   assert.equal(normalizeHexColor('red', '#000000'), '#000000')
