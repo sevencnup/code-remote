@@ -35,6 +35,10 @@ test('retro mobile theme keeps locally edited file names visible', () => {
   assert.ok(styles.includes('.remote-shell--theme-retro .file-change-card__path-mobile { display: block; }'))
 })
 
+test('send button labels stay on one line', () => {
+  assert.ok(styles.includes('.send-button { white-space: nowrap; }'))
+})
+
 test('image-draft restore and manual resizing do not add transient layout height on a pane switch', () => {
   assert.ok(page.includes('{readingImages ? <p className="attachment-reading"'))
   assert.ok(!page.includes('!imagesReady || readingImages ? <p className="attachment-reading"'))
