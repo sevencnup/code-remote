@@ -51,3 +51,21 @@
 ## 操作入口图标统一（0.30.1-dev.7 / PATCH）
 
 回查页面控件时发现文件树“上级/跟随聊天”、终端发送、文件保存/重载及授权操作还用纯文字或字符箭头。仅在 Android 5 主题下为这些入口加上实心 Material 图标，并保留其他主题的原按钮样式。
+
+## 进一步还原 Android 2.3 Gingerbread（0.30.1-dev.9 / PATCH）
+
+用户反馈 Android 5 外观仍然太新，字体与旧系统不符，终端标题栏两侧还露出底色。本轮将主题视觉退回 Gingerbread：深色金属标题栏、深灰内容面、橄榄绿强调色、直角/小圆角控件和 Android 2.3 的 Droid Sans / Droid Sans Fallback 字体；主题内部偏好键继续使用 `lollipop`，避免升级后重置用户已选主题。字体从 Android Open Source Project 的 Android 2.3.7 源码获取，随 APK 打包并附 Apache 2.0 NOTICE，保证新系统不会把 Droid Sans 别名映射成 Roboto。
+
+1. 在设置中将该选项标为 Android 2.3，并切换到 Gingerbread 深色调色板、旧式渐变标题栏与按钮状态。
+2. 将通用文字、编辑框、聊天消息和 Markdown 文本统一使用 Droid Sans，并让中文回退字体使用 Droid Sans Fallback；保留终端输出的等宽字体。
+3. 终端面板去除左右内边距，让标题栏铺满窗口宽度，维持其他主题的布局不变。
+4. 递增 PATCH 版本和 Android `versionCode`，构建新的 APK 并安装到已连接手机，检查主题选择、聊天文字、标题栏和终端。
+
+## 按新参考图调整为 Android 1.0（0.30.1-dev.10 / PATCH）
+
+用户补充了 Android 1.0 的整套界面截图，明确之前的 Gingerbread 仍不够老。本轮以该图为准，将标题栏和系统状态区改为银灰金属渐变、应用内容保留深色经典列表面、按键使用旧式灰阶高光与凹凸边线、主操作采用亮绿；主题名称改为 Android 1.0。继续使用 Android 2.3 开源 Droid 字体资源作为同一早期 Droid 字体家族，保留其 Apache 2.0 NOTICE 和内部 `lollipop` 偏好键。
+
+1. 将设置里的主题选项改为“Android 1.0”，状态栏改为浅银灰并显示深色图标，应用栏改为银灰高光渐变和深色标题/图标。
+2. 将旧主题的常用控件、列表行和操作按钮改成 Android 1 风格的灰阶金属层次与边线，亮绿只用于选中和主操作。
+3. 终端标题栏继续全宽铺满，但换成银灰金属渐变并检查两侧不露底色。
+4. 递增 PATCH 版本和 Android `versionCode`，构建新 APK 并安装，按参考图检查状态栏、标题栏、按钮、字体和终端。
