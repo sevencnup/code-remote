@@ -11,5 +11,5 @@ test('choosing approval mode saves the composer preference without taking over t
   const selection = page.slice(start, end)
   assert.match(selection, /updateComposerPreferences/)
   assert.doesNotMatch(selection, /updateApprovalPolicy/)
-  assert.match(page, /approvalPolicy: selectedApprovalPolicy,/)
+  assert.ok(page.includes('approvalPolicy: showCodexPreferences ? selectedApprovalPolicy : undefined,'))
 })

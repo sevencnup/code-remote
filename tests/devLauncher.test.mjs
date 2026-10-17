@@ -14,6 +14,19 @@ test('Windows launcher preserves an explicitly configured isolated Codex runtime
   )
 })
 
+test('Windows launchers fall back to Python from PATH when the project venv is absent', async () => {
+  for (const relativePath of ['../scripts/dev.mjs', '../scripts/engine-dev.mjs']) {
+    const launcher = fileURLToPath(new URL(relativePath, import.meta.url))
+    const source = await readFile(launcher, 'utf8')
+
+    assert.match(
+      source,
+      /isWindows \? 'python' : null/,
+      `${relativePath} must support a Windows PATH Python fallback`,
+    )
+  }
+})
+
 test('Windows launcher prefers the PATH Codex CLI before managed and VS Code fallbacks', async () => {
   const launcher = fileURLToPath(new URL('../scripts/dev.mjs', import.meta.url))
   const source = await readFile(launcher, 'utf8')
@@ -40,4 +53,23 @@ test('one-click batch launchers delegate Codex CLI selection to the shared launc
       `${relativePath} must not pin a bundled or stale Codex CLI`,
     )
   }
+})
+
+test('Windows background service is independent and restarts after failure', async () => {
+  const installer = await readFile(
+    fileURLToPath(new URL('../scripts/install-windows-service.ps1', import.meta.url)),
+    'utf8',
+  )
+  const runner = await readFile(
+    fileURLToPath(new URL('../scripts/run-windows-service.ps1', import.meta.url)),
+    'utf8',
+  )
+
+  assert.match(installer, /New-ScheduledTaskTrigger -AtLogOn/)
+  assert.match(installer, /-RestartCount 999/)
+  assert.match(installer, /-ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/)
+  assert.match(installer, /-LogonType Interactive -RunLevel Limited/)
+  assert.match(runner, /& \$env:COMSPEC \/d \/s \/c \$commandLine/)
+  assert.match(runner, /UTF8Encoding\(\$false\)/)
+  assert.match(runner, /windows-service\.log/)
 })
