@@ -31,6 +31,10 @@ test('running file changes reserve a matching slot across open panes', () => {
   assert.ok(styles.includes('.composer-file-change-summary--placeholder { visibility: hidden; pointer-events: none; }'))
 })
 
+test('retro mobile theme keeps locally edited file names visible', () => {
+  assert.ok(styles.includes('.remote-shell--theme-retro .file-change-card__path-mobile { display: block; }'))
+})
+
 test('image-draft restore and manual resizing do not add transient layout height on a pane switch', () => {
   assert.ok(page.includes('{readingImages ? <p className="attachment-reading"'))
   assert.ok(!page.includes('!imagesReady || readingImages ? <p className="attachment-reading"'))
