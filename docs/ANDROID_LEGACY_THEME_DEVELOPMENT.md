@@ -77,3 +77,11 @@
 1. 将新建对话入口改为银灰金属渐变与深色文字，移除整块荧光绿填充。
 2. 以蓝灰作为 Codex/聊天图标和选中行色，保留适度 Android 绿色主操作，并给不同图标类别恢复蓝、橙、紫、灰的色彩区分。
 3. 更新 PATCH 版本和 Android `versionCode`，构建新 APK 并安装；检查侧边栏、选中行、发送按钮和文件操作图标。
+
+## 统一 Android 1.0 的中英数字字体（0.30.1-dev.12 / PATCH）
+
+用户要求中文、英文字母和数字也匹配 Android 1 参考图。所有普通界面文字使用内置 Droid Sans：拉丁字母和数字由 Droid Sans Regular/Bold 绘制，中文由 Droid Sans Fallback 绘制；低于 Android 10 的设备使用 Droid Sans 作为主字体，让系统按旧版 Android 的字体回退机制绘制中文。代码编辑区和终端继续保留等宽字体。此为现有主题字体的修正，归类为 PATCH。
+
+1. 确认主界面、侧栏、聊天、设置、输入框和按钮都经主题字体工厂设置字体。
+2. 修正旧 Android API 下的主字体选择，避免英文和数字误用 CJK fallback 字体；保留中英文混排与加粗样式。
+3. 更新 PATCH 版本和 Android `versionCode`，构建并安装新 APK，检查中英文字、数字和混排内容。
