@@ -51,3 +51,21 @@ PATCH: refine the existing Pixel theme without changing what users can do.
 
 - `pnpm build` passes and emits the Fusion Pixel TTF plus `public/pixel-theme/fonts/FusionPixel-OFL.txt` into `dist`.
 - `node --test tests/themePreferences.test.mjs` passes (11/11).
+
+## Follow-up — Pixel font fallback rendering
+
+### Classification
+
+PATCH: restore readable text in the existing Pixel theme on browsers that do not render the single-weight web font reliably.
+
+### Design and implementation steps
+
+1. Re-enable font-weight synthesis within Pixel theme roots because the bundled Fusion Pixel face only provides Regular while the app globally disables synthesis.
+2. Add explicit platform Chinese and Latin fallback families without changing the Pixel theme's primary font.
+3. Increment the web development patch version and add a concise changelog entry.
+4. Run the production build, theme preference tests, and verify the served font resource and bundled fallback rules.
+
+### Verification
+
+- `pnpm build` passes and `node --test tests/themePreferences.test.mjs` passes (11/11).
+- The local web service returns the bundled font with HTTP 200 and `Content-Type: font/ttf`.
