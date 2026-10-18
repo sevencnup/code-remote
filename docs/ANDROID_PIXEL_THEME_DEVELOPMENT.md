@@ -66,3 +66,31 @@ PATCH: improve the existing Pixel theme typography without changing its availabl
 - Other themes and code block typography retain their existing typefaces.
 - Font attribution and redistribution notices are included with the app assets.
 - The Android debug build completes successfully.
+
+## Pixel sidebar fidelity follow-up
+
+### Classification
+
+PATCH: refine the existing Pixel sidebar to better match the supplied design, without adding or removing user tasks. Target Android version: `0.44.0-dev.4` (`versionCode 284`).
+
+### Design and implementation steps
+
+1. Align the new-chat action with the reference's cream pixel surface, dark label, and green add glyph instead of reusing the bright Codex blue selected-action treatment.
+2. Make the sidebar's header, selected conversation, and footer controls use the supplied pixel frames and icon artwork as one coherent visual system.
+3. Tune conversation row scale, spacing, and text contrast for the reference's compact pixel layout while keeping touch targets usable.
+4. Keep the changes scoped to the Pixel theme; leave Old Classic and other themes unchanged.
+5. Increment the Android patch sequence and changelog, build a distinct debug APK, install it without opening the app, and verify the installed package version.
+
+### Acceptance criteria
+
+- The new-chat button uses the cream/dark/green treatment from the reference and no longer looks like a standard blue Codex action.
+- Pixel sidebar controls and selected conversation use the supplied pixel frames consistently.
+- Conversation labels remain legible and rows remain comfortable to tap.
+- Other themes retain their prior sidebar appearance.
+- The Android debug build succeeds and the installed package reports the new version.
+
+### Completion
+
+- Pixel's new-chat button now uses the cream frame, dark text, and original green plus artwork. The sidebar panel, selected chat, and compact controls use the supplied pixel frames; sidebar row sizing and footer icon scale were adjusted for the reference.
+- Android debug build succeeded. The package was installed to `10.126.126.2:5555`; Package Manager reports `0.44.0-dev.4` / `versionCode 284`.
+- The app was not opened during verification, so the device's foreground app was left undisturbed.
