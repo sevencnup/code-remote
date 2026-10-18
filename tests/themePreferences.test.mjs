@@ -21,6 +21,9 @@ const defaultPreferences = {
   customBackgroundColor: '#4b5563',
   customTextColor: '#f1f5f9',
   customBackgroundTransparency: 0,
+  customBackgroundPositionX: 50,
+  customBackgroundPositionY: 50,
+  customBackgroundZoom: 100,
   fontSizeAdjustment: 0,
   systemNotificationsEnabled: false,
 }
@@ -63,6 +66,9 @@ test('normalizes stored theme values and ignores invalid background images', asy
       customBackgroundColor: '#A1B2C3',
       customTextColor: defaultPreferences.customTextColor,
       customBackgroundTransparency: 100,
+      customBackgroundPositionX: 50,
+      customBackgroundPositionY: 50,
+      customBackgroundZoom: 100,
       fontSizeAdjustment: 0,
       systemNotificationsEnabled: false,
     })
@@ -80,6 +86,9 @@ test('round-trips saved theme preferences through local storage', async () => {
     customBackgroundColor: '#123456',
     customTextColor: '#ABCDEF',
     customBackgroundTransparency: 42,
+    customBackgroundPositionX: 37.5,
+    customBackgroundPositionY: 62,
+    customBackgroundZoom: 145,
     fontSizeAdjustment: 0,
     systemNotificationsEnabled: false,
   }
@@ -113,6 +122,21 @@ test('normalizes colors and clamps transparency', () => {
   assert.equal(normalizeTransparency(Number.NaN), 0)
 })
 
+test('normalizes background crop position and zoom', async () => {
+  const stored = JSON.stringify({
+    ...defaultPreferences,
+    customBackgroundPositionX: -20,
+    customBackgroundPositionY: 104.44,
+    customBackgroundZoom: 999,
+  })
+  await withLocalStorage({ getItem: () => stored }, async () => {
+    const preferences = readThemePreferences()
+    assert.equal(preferences.customBackgroundPositionX, 0)
+    assert.equal(preferences.customBackgroundPositionY, 100)
+    assert.equal(preferences.customBackgroundZoom, 250)
+  })
+})
+
 test('accepts compact supported image data URLs only', () => {
   assert.equal(isCompactThemeBackgroundImage('data:image/png;base64,aGVsbG8='), true)
   assert.equal(isCompactThemeBackgroundImage('data:image/svg+xml;base64,aGVsbG8='), false)
@@ -125,10 +149,15 @@ test('generates consistent global custom-theme CSS variables', () => {
     customBackgroundColor: '#336699',
     customTextColor: '#AABBCC',
     customBackgroundTransparency: 75,
+    customBackgroundPositionX: 25,
+    customBackgroundPositionY: 70,
+    customBackgroundZoom: 150,
     customBackgroundImage: 'data:image/png;base64,aGVsbG8=',
   }), {
     '--custom-theme-background': '#336699',
     '--custom-theme-background-opacity': 0.25,
+    '--custom-theme-background-position': '25% 70%',
+    '--custom-theme-background-zoom': 1.5,
     '--custom-theme-background-image': 'linear-gradient(rgba(0, 0, 0, .2), rgba(0, 0, 0, .2)), url("data:image/png;base64,aGVsbG8=")',
     '--custom-theme-text-color': '#AABBCC',
     '--custom-theme-surface': 'rgba(51, 102, 153, 0.38)',
