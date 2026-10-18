@@ -46,3 +46,23 @@ PATCH: refine the existing Pixel theme with the supplied frame artwork.
 - Panel, square, strip, and active frame assets appear in their intended Pixel theme surfaces.
 - Existing non-Pixel theme branches retain their prior backgrounds.
 - The Android debug build completes successfully.
+
+## Pixel typography follow-up
+
+### Classification
+
+PATCH: improve the existing Pixel theme typography without changing its available tasks or controls.
+
+### Implementation steps
+
+1. Bundle the Fusion Pixel 12px proportional Simplified Chinese font from its official release, retaining the upstream OFL and source notices.
+2. Use the pixel typeface for Pixel theme text and labels only; leave all other themes unchanged.
+3. Preserve monospaced code rendering for alignment and readability.
+4. Increment the Android patch sequence and changelog, then build the Android debug variant.
+
+### Acceptance criteria
+
+- Chinese and Latin UI text use a visibly pixel-styled font when the Pixel theme is active.
+- Other themes and code block typography retain their existing typefaces.
+- Font attribution and redistribution notices are included with the app assets.
+- The Android debug build completes successfully.
