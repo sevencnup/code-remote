@@ -113,6 +113,20 @@ test('recognizes and persists the retro web theme', async () => {
   })
 })
 
+test('recognizes and persists the pixel theme', async () => {
+  const values = new Map([['codex-remote.theme-preferences', JSON.stringify({ ...defaultPreferences, theme: 'pixel' })]])
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  }
+
+  await withLocalStorage(storage, async () => {
+    assert.equal(readThemePreferences().theme, 'pixel')
+    saveThemePreferences({ ...defaultPreferences, theme: 'pixel' })
+    assert.equal(readThemePreferences().theme, 'pixel')
+  })
+})
+
 test('normalizes colors and clamps transparency', () => {
   assert.equal(normalizeHexColor('#aBc123', '#000000'), '#ABC123')
   assert.equal(normalizeHexColor('red', '#000000'), '#000000')
