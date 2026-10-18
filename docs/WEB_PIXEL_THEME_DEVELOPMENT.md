@@ -187,3 +187,22 @@ PATCH: make a small visual alignment adjustment to the existing Pixel composer w
 - `node --test tests/themePreferences.test.mjs` passes (15/15), including checks for the 3px Pixel composer lift and safe-area spacing.
 - `pnpm build` and `git diff --check` pass.
 - Version `0.45.6-dev.3` and changelog entry added.
+
+## Follow-up — lower only the Pixel composer bottom frame edge
+
+### Classification
+
+PATCH: refine the Pixel composer border position without moving the input or its buttons.
+
+### Design and implementation steps
+
+1. Revert the 3px composer-dock lift and extend only the Pixel composer border image's bottom edge by 3px, leaving its controls and mobile safe-area layout in place.
+2. Add a CSS regression assertion for the bottom-only frame offset.
+3. Increment the web development patch sequence and add a concise changelog entry.
+4. Run the theme preference test, production build, and `git diff --check`.
+
+### Verification
+
+- `node --test tests/themePreferences.test.mjs` passes (15/15), including the bottom-only 3px frame offset assertion.
+- `pnpm build` and `git diff --check` pass.
+- Version `0.45.6-dev.4` and changelog entry added.
