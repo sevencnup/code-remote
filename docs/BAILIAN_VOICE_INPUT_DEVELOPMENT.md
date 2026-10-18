@@ -11,7 +11,7 @@
 ## 方案与边界
 
 - 浏览器请求麦克风后通过 Web Audio 将输入重采样为单声道 16 kHz、PCM16 little-endian；通过已配对认证的 WebSocket 发送至 Codex Remote 后端。
-- 后端只从环境变量读取百炼配置：`DASHSCOPE_API_KEY`、`BAILIAN_WORKSPACE_ID`，以及可选的 `BAILIAN_REGION`（默认 `cn-beijing`）、`BAILIAN_REALTIME_MODEL`（默认 `qwen3.8-omni-flash-realtime`）和 `BAILIAN_TRANSCRIPTION_MODEL`（默认 `qwen3-asr-flash-realtime`）。密钥不能下发至浏览器或写入日志。
+- 后端优先从服务端项目设置读取百炼配置，环境变量 `DASHSCOPE_API_KEY`、`BAILIAN_WORKSPACE_ID`、`BAILIAN_REGION`（默认 `cn-beijing`）、`BAILIAN_REALTIME_MODEL`（默认 `qwen3.8-omni-flash-realtime`）和 `BAILIAN_TRANSCRIPTION_MODEL`（默认 `qwen3-asr-flash-realtime`）作为回退。密钥不能下发至浏览器或写入日志。
 - 后端为听写提供独立 WebSocket 端点，不复用会自动驱动对话的 `/api/v1/codex/ws`。
 - 百炼会话启用 `qwen3-asr-flash-realtime` 输入转写并使用手动轮次模式。客户端停止录音后提交 `input_audio_buffer.commit`；只转发输入音频转写 partial/completed 事件，绝不发送 `response.create`。
 - 提供取消、连接失败、权限拒绝、未配置凭证、空识别等状态；任何结束路径都停止浏览器音轨并关闭 WebSocket。
