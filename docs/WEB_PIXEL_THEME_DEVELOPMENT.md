@@ -87,3 +87,26 @@ PATCH: restore readable text after the bundled web font rendered blank in the us
 
 - `pnpm build` passes and `node --test tests/themePreferences.test.mjs` passes (11/11).
 - Confirmed the rebuilt web CSS no longer references or emits the Fusion Pixel TTF; the Android font asset remains untouched.
+
+## Follow-up — use a browser-compatible Pixel font
+
+### Classification
+
+PATCH: make the existing Pixel theme typography genuinely pixel-styled while preserving readable text and existing non-Pixel themes.
+
+### Design and implementation steps
+
+1. Validate the official Fusion Pixel Simplified Chinese WOFF2 release, its Chinese/Latin glyph coverage, and the included OFL license.
+2. Render Chinese and Latin samples in the available headless Chromium browser and confirm the font loads and glyphs are visible before integrating it.
+3. If browser rendering succeeds, bundle the validated WOFF2 assets and license, scope them to Pixel theme UI text, and keep code, file previews, and terminal output monospace.
+4. Increment the web development patch version and add a concise changelog entry.
+5. Run theme tests and the production build, then render the actual Pixel-themed web UI in Chromium to check that text remains visible.
+
+### Verification
+
+- Bundled the upstream Fusion Pixel 12px proportional Simplified Chinese WOFF2 release and the release's OFL/license notices; `font-display: swap` and system fallbacks keep text readable if the font cannot load.
+- A Chromium rendering of Chinese and Latin sample text showed the font loaded successfully and visibly pixel-shaped glyphs.
+- Rendered the built web app's Pixel-themed pairing screen in Chromium: all Chinese and Latin text remained visible and pixel-styled. The font URL returned HTTP 200 with `Content-Type: font/woff2`.
+- Code blocks and terminal text remain explicitly monospace; other themes are unchanged.
+- [x] Version `0.45.4-dev.1` and concise changelog entry added.
+- [x] Pixel theme tests and production build passed.

@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import ts from 'typescript'
 
 const source = await readFile(new URL('../src/lib/themePreferences.ts', import.meta.url), 'utf8')
+const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
@@ -125,6 +126,19 @@ test('recognizes and persists the pixel theme', async () => {
     saveThemePreferences({ ...defaultPreferences, theme: 'pixel' })
     assert.equal(readThemePreferences().theme, 'pixel')
   })
+})
+
+test('uses the licensed browser-ready pixel font and keeps code monospace', async () => {
+  const font = await readFile(new URL('../public/pixel-theme/fonts/FusionPixelZhHans.woff2', import.meta.url))
+  const license = await readFile(new URL('../public/pixel-theme/fonts/FusionPixel-OFL.txt', import.meta.url), 'utf8')
+
+  assert.equal(font.subarray(0, 4).toString(), 'wOF2')
+  assert.match(styles, /@font-face\s*\{[^}]*font-family:\s*"Fusion Pixel";[^}]*FusionPixelZhHans\.woff2[^}]*format\('woff2'\)/s)
+  assert.match(styles, /\.app-root--theme-pixel\s*\{[^}]*font-family:\s*"Fusion Pixel"/s)
+  assert.match(styles, /\.remote-shell--theme-pixel\s*\{[^}]*font-family:\s*"Fusion Pixel"/s)
+  assert.match(styles, /\.remote-shell--theme-pixel \.chat-message__code\s*\{[^}]*font-family:\s*ui-monospace/s)
+  assert.match(styles, /\.remote-shell--theme-pixel \.terminal-dialog__screen\s*\{[^}]*font-family:\s*ui-monospace/s)
+  assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/)
 })
 
 test('normalizes colors and clamps transparency', () => {
