@@ -130,3 +130,22 @@ PATCH: fix existing Pixel theme decoration placement without changing chat behav
 - Chromium computed a `9px wide-window` frame on user message bodies in both Codex and Claude modes, `0px` border on the message copy action, and `display: none` on the operation divider; the screenshot confirmed the visible result and theme-specific readable text.
 - `node --test tests/themePreferences.test.mjs` and `pnpm build` pass.
 - Version `0.45.5-dev.1` and changelog entry added.
+
+## Follow-up — keep composer button frames stable on hover
+
+### Classification
+
+PATCH: fix Pixel composer button frames visibly changing while hovering between controls; retain the existing borders.
+
+### Design and implementation steps
+
+1. Keep the Pixel composer menu and send buttons on their existing `square-window.png` frame in both resting and hover/open states; only change the hover surface color.
+2. Add a CSS regression assertion that the Pixel composer hover rules preserve the same frame and 8px border width.
+3. Increment the web development patch version and add a concise changelog entry.
+4. Run the theme preference test, production build, and `git diff --check`; verify computed border styles in the available browser if feasible.
+
+### Verification
+
+- `node --test tests/themePreferences.test.mjs` passes (14/14); the regression assertion checks both composer button bases retain an 8px `square-window.png` border and their hover rules keep that same frame.
+- `pnpm build` and `git diff --check` pass. Browser automation packages are not installed in this workspace, so hover continuity is verified through the focused CSS regression assertion.
+- Version `0.45.6-dev.1` and changelog entry added.

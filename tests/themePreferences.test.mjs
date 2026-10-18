@@ -147,6 +147,13 @@ test('puts the Pixel frame on user messages, not copy actions, and removes the o
   assert.match(styles, /\.remote-shell--theme-pixel \.operation-log > summary::after\s*\{\s*display: none;/)
 })
 
+test('keeps Pixel composer button borders and frame artwork stable on hover', () => {
+  assert.match(styles, /\.remote-shell--theme-pixel \.send-button\s*\{[^}]*border: 8px solid transparent;[^}]*border-image: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
+  assert.match(styles, /\.remote-shell--theme-pixel \.send-button:hover:not\(:disabled\)\s*\{[^}]*border-image-source: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
+  assert.match(styles, /\.remote-shell--theme-pixel \.composer-menu__trigger\s*\{[^}]*border: 8px solid transparent;[^}]*border-image: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
+  assert.match(styles, /\.remote-shell--theme-pixel \.composer-menu__trigger:hover\s*\{[^}]*border-image-source: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
+})
+
 test('normalizes colors and clamps transparency', () => {
   assert.equal(normalizeHexColor('#aBc123', '#000000'), '#ABC123')
   assert.equal(normalizeHexColor('red', '#000000'), '#000000')
