@@ -155,6 +155,11 @@ test('keeps Pixel composer button borders and frame artwork stable on hover', ()
   assert.match(styles, /\.remote-shell--theme-pixel\.remote-shell \.message-composer__footer :is\(\.composer-menu__trigger, \.send-button, \.stop-button, \.attach-button\):hover:not\(:disabled\),[\s\S]*?\.remote-shell--theme-pixel\.remote-shell \.message-composer__footer \.composer-menu--open \.composer-menu__trigger\s*\{[^}]*border: 8px solid transparent;[^}]*border-image: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
 })
 
+test('raises the Pixel composer frame slightly while preserving mobile safe-area spacing', () => {
+  assert.match(styles, /\.remote-shell--theme-pixel \.composer-dock\s*\{\s*margin-bottom: 25px;/)
+  assert.match(styles, /@media\s*\(max-width:\s*700px\)\s*\{\s*\.remote-shell--theme-pixel \.composer-dock\s*\{\s*margin-bottom: calc\(max\(8px, env\(safe-area-inset-bottom\), var\(--native-composer-bottom-inset\)\) \+ 3px\);/)
+})
+
 test('normalizes colors and clamps transparency', () => {
   assert.equal(normalizeHexColor('#aBc123', '#000000'), '#ABC123')
   assert.equal(normalizeHexColor('red', '#000000'), '#000000')

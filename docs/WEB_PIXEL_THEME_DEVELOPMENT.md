@@ -168,3 +168,22 @@ PATCH: restore the existing Pixel composer borders during hover/open states afte
 - `node --test tests/themePreferences.test.mjs` passes (14/14), including the explicit hover/open 8px border regression assertion.
 - `pnpm build` and `git diff --check` pass.
 - Version `0.45.6-dev.2` and changelog entry added.
+
+## Follow-up — raise the Pixel composer bottom edge slightly
+
+### Classification
+
+PATCH: make a small visual alignment adjustment to the existing Pixel composer without changing its controls or behavior.
+
+### Design and implementation steps
+
+1. Raise the Pixel composer dock by increasing its bottom spacing by 3px; preserve the existing mobile safe-area inset and add the same 3px there.
+2. Add a CSS regression assertion for desktop and mobile composer positioning.
+3. Increment the web development patch sequence and add a concise changelog entry.
+4. Run the theme preference test, production build, and `git diff --check`.
+
+### Verification
+
+- `node --test tests/themePreferences.test.mjs` passes (15/15), including checks for the 3px Pixel composer lift and safe-area spacing.
+- `pnpm build` and `git diff --check` pass.
+- Version `0.45.6-dev.3` and changelog entry added.
