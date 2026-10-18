@@ -25,3 +25,24 @@ Add a distinct Pixel theme inspired by the supplied retro chat-sidebar reference
 - Each of the 19 supplied icon sprites is available as an independent transparent Android asset and appears in its matching action.
 - Selecting another theme restores its existing colors and icons.
 - The Android debug build completes successfully.
+
+## Border asset follow-up
+
+### Classification
+
+PATCH: refine the existing Pixel theme with the supplied frame artwork.
+
+### Implementation steps
+
+1. Keep the four extracted frame sprites as independent transparent drawable assets.
+2. Add a cached nine-slice drawable that stretches the frame edges while preserving the pixel corners.
+3. Use the panel frame for cards, the square frame for compact controls, the strip frame for the header and composer, and the active frame for selected controls and the live activity row.
+4. Keep the frame assets and their colors scoped to the Pixel theme.
+5. Increment the Android patch sequence and changelog, then build the Android debug variant.
+
+### Acceptance criteria
+
+- Frame corners keep their pixel shape at narrow and wide view sizes.
+- Panel, square, strip, and active frame assets appear in their intended Pixel theme surfaces.
+- Existing non-Pixel theme branches retain their prior backgrounds.
+- The Android debug build completes successfully.
