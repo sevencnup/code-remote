@@ -317,3 +317,27 @@ PATCH: restore a single-line chat title and match the sidebar brand title font s
 
 - Restored a single-line title and matched the sidebar brand title's base size: 18sp for retro themes and 15sp for other themes. The workspace path remains hidden.
 - Android debug build succeeded, and `0.44.0-dev.17` / `versionCode 297` was installed on `10.126.126.2:5555`.
+
+## Android new-chat welcome loading follow-up
+
+### Classification
+
+PATCH: show the welcome screen immediately for a newly created empty chat without requesting unsupported turn history, and keep that protection until a turn actually starts. Target Android version: `0.44.0-dev.19` (`versionCode 299`).
+
+### Design and implementation steps
+
+1. Mark newly created empty threads so history refreshes do not call the turns endpoint before the first message exists.
+2. Render the empty-chat welcome state immediately after thread creation.
+3. Clear the empty-thread marker when a turn starts or completes, not merely when a send request is accepted; remove stale markers when chats are deleted.
+4. Increment the Android patch sequence and changelog, build a distinct APK, install it, and verify that New Chat opens directly to the welcome screen.
+
+### Acceptance criteria
+
+- Tapping New Chat displays the welcome screen without first showing the `list_turns is not supported yet` error.
+- Empty newly created chats stay on the welcome screen during background refreshes; active chats resume history refresh after a turn starts.
+- The Android debug build succeeds and `0.44.0-dev.19` / `versionCode 299` is installed on the target phone.
+
+### Completion
+
+- New empty chats skip the unsupported history request. A send or queue response alone no longer clears that guard; real turn start/completion events do, and deleted chats remove their marker.
+- Android debug build succeeded and `0.44.0-dev.19` / `versionCode 299` was installed on `10.126.126.2:5555`. The phone was locked during this pass, so opening the app and tapping New Chat could not be verified on-device.
