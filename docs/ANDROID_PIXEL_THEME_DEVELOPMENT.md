@@ -221,3 +221,27 @@ PATCH: correct Pixel-theme icon spacing, workspace paste control height, and que
 
 - Pixel conversation rows now inset their contents by 8dp, putting the chat glyph clear of the selected frame. The workspace Paste action has a 38dp minimum height with vertical padding, and the light queue card uses dark message, notice, and metadata text.
 - Android debug build succeeded, and `0.44.0-dev.13` / `versionCode 293` was installed on `10.126.126.2:5555`. The installed screenshot confirms the chat glyph no longer touches the selected frame.
+
+## Android chat header title spacing follow-up
+
+### Classification
+
+PATCH: remove the workspace path subtitle from the chat header so the header space is devoted to the active chat title. Target Android version: `0.44.0-dev.14` (`versionCode 294`).
+
+### Design and implementation steps
+
+1. Keep the active conversation title in the header and remove its workspace-path subtitle.
+2. Vertically center the title in the available header space after removing the subtitle.
+3. Remove the now-unused workspace-path view update from header rendering.
+4. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect the chat header on the target phone.
+
+### Acceptance criteria
+
+- The header shows the active chat title on one line with no workspace path beneath it.
+- Header actions and other themes continue to render and operate as before.
+- The Android debug build succeeds and `0.44.0-dev.14` / `versionCode 294` is installed on the target phone.
+
+### Completion
+
+- The workspace-path subtitle and its renderer update were removed; the chat title is vertically centered in the available header column. Long titles continue to use the existing one-line ellipsis behavior.
+- Android debug build succeeded, and `0.44.0-dev.14` / `versionCode 294` was installed on `10.126.126.2:5555`. The device screenshot confirms the header no longer displays the path beneath the chat title.
