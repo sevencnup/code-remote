@@ -69,3 +69,21 @@ PATCH: restore readable text in the existing Pixel theme on browsers that do not
 
 - `pnpm build` passes and `node --test tests/themePreferences.test.mjs` passes (11/11).
 - The local web service returns the bundled font with HTTP 200 and `Content-Type: font/ttf`.
+
+## Follow-up — restore Pixel theme text visibility
+
+### Classification
+
+PATCH: restore readable text after the bundled web font rendered blank in the user's browser.
+
+### Design and implementation steps
+
+1. Remove the Fusion Pixel web-font integration and restore the previously visible monospace stack for Pixel theme UI text; leave Android font assets untouched.
+2. Keep the Pixel palette, icons, frames, and user-message border unchanged.
+3. Increment the web development patch version and add a concise changelog entry.
+4. Run the production build and theme preference tests, confirming the web bundle no longer references the failing font asset.
+
+### Verification
+
+- `pnpm build` passes and `node --test tests/themePreferences.test.mjs` passes (11/11).
+- Confirmed the rebuilt web CSS no longer references or emits the Fusion Pixel TTF; the Android font asset remains untouched.
