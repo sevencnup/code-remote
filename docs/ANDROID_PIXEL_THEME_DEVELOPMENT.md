@@ -94,3 +94,28 @@ PATCH: refine the existing Pixel sidebar to better match the supplied design, wi
 - Pixel's new-chat button now uses the cream frame, dark text, and original green plus artwork. The sidebar panel, selected chat, and compact controls use the supplied pixel frames; sidebar row sizing and footer icon scale were adjusted for the reference.
 - Android debug build succeeded. The package was installed to `10.126.126.2:5555`; Package Manager reports `0.44.0-dev.4` / `versionCode 284`.
 - The app was not opened during verification, so the device's foreground app was left undisturbed.
+
+## Pixel font visibility and frame drawable follow-up
+
+### Classification
+
+PATCH: restore readable text in the existing Pixel theme and make pixel frame state changes safe. Target Android version: `0.44.0-dev.7` (`versionCode 287`).
+
+### Design and implementation steps
+
+1. Use Android's reliable monospace typeface for Pixel UI text while retaining the bundled pixel font asset until its rendering can be verified on device.
+2. Keep the platform's default text paint flags so glyphs remain visible on the target phone.
+3. Add a valid `Drawable.ConstantState` to the pixel nine-slice frame so Android can safely clone it in pressed and selected states.
+4. Build and install a distinct APK, reopen the app, and inspect the actual device screen and logs for visible labels and drawable warnings.
+
+### Acceptance criteria
+
+- Chinese labels and conversation text render in Pixel theme; Latin text and numbers remain monospaced.
+- Pixel frame state backgrounds clone safely without `LayerDrawable` ownership warnings.
+- The Android build succeeds and the installed package reports `0.44.0-dev.7` / `versionCode 287`.
+
+### Completion
+
+- On-device screenshots confirmed the bundled Fusion Pixel face still hid text on the target phone after adding a system fallback. Pixel UI now uses Android's monospace face with default text paint flags; Chinese labels, conversation messages, and sidebar entries are visible.
+- Added drawable constant state for pixel frames. The latest device log sample contains no invalid `LayerDrawable` ownership warnings.
+- Debug build succeeded and `0.44.0-dev.7` / `versionCode 287` was installed and opened on `10.126.126.2:5555`; the chat and sidebar were visually checked.
