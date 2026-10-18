@@ -110,3 +110,23 @@ PATCH: make the existing Pixel theme typography genuinely pixel-styled while pre
 - Code blocks and terminal text remain explicitly monospace; other themes are unchanged.
 - [x] Version `0.45.4-dev.1` and concise changelog entry added.
 - [x] Pixel theme tests and production build passed.
+
+## Follow-up — correct Pixel message frame and operation divider
+
+### Classification
+
+PATCH: fix existing Pixel theme decoration placement without changing chat behavior or other themes.
+
+### Design and implementation steps
+
+1. Hide the operation-log summary's blue divider only in the Pixel theme.
+2. Raise the Pixel user-message selectors above the higher-specificity Codex/Claude surface rules so the frame applies to the message bubble in both modes.
+3. Remove the decorative frame from message copy-action buttons; keep code-copy controls and other controls unchanged.
+4. Increment the web development patch version and add a concise changelog entry.
+5. Run Pixel theme tests/build and render both mode selectors in Chromium, confirming the user bubble has a frame, the message copy button does not, and the operation divider is absent.
+
+### Verification
+
+- Chromium computed a `9px wide-window` frame on user message bodies in both Codex and Claude modes, `0px` border on the message copy action, and `display: none` on the operation divider; the screenshot confirmed the visible result and theme-specific readable text.
+- `node --test tests/themePreferences.test.mjs` and `pnpm build` pass.
+- Version `0.45.5-dev.1` and changelog entry added.

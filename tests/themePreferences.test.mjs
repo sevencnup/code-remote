@@ -141,6 +141,12 @@ test('uses the licensed browser-ready pixel font and keeps code monospace', asyn
   assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/)
 })
 
+test('puts the Pixel frame on user messages, not copy actions, and removes the operation divider', () => {
+  assert.match(styles, /\.remote-shell--theme-pixel\.remote-shell \.remote-chat:not\(\.remote-chat--claude\) \.chat-message--user \.chat-message__body,[\s\S]*?\.remote-shell--theme-pixel\.remote-shell \.remote-chat--claude \.chat-message--user \.chat-message__body\s*\{[^}]*border-image: url\('\/pixel-theme\/frames\/wide-window\.png'\)/)
+  assert.match(styles, /\.remote-shell--theme-pixel \.chat-message__actions button\s*\{[^}]*border: 0;[^}]*border-image: none/)
+  assert.match(styles, /\.remote-shell--theme-pixel \.operation-log > summary::after\s*\{\s*display: none;/)
+})
+
 test('normalizes colors and clamps transparency', () => {
   assert.equal(normalizeHexColor('#aBc123', '#000000'), '#ABC123')
   assert.equal(normalizeHexColor('red', '#000000'), '#000000')
