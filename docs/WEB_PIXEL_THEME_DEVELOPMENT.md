@@ -149,3 +149,22 @@ PATCH: fix Pixel composer button frames visibly changing while hovering between 
 - `node --test tests/themePreferences.test.mjs` passes (14/14); the regression assertion checks both composer button bases retain an 8px `square-window.png` border and their hover rules keep that same frame.
 - `pnpm build` and `git diff --check` pass. Browser automation packages are not installed in this workspace, so hover continuity is verified through the focused CSS regression assertion.
 - Version `0.45.6-dev.1` and changelog entry added.
+
+## Follow-up — enforce Pixel composer borders while hovering
+
+### Classification
+
+PATCH: restore the existing Pixel composer borders during hover/open states after the previous frame-stability fix did not prevent the border reset from winning in the rendered UI.
+
+### Design and implementation steps
+
+1. Add a higher-specificity Pixel composer footer rule that explicitly reapplies the 8px `square-window.png` border to hovered or open model, effort, authorization, attachment, stop, and send controls.
+2. Extend the CSS regression assertion to require the explicit hover border as well as the stable frame.
+3. Increment the web development patch sequence and add a concise changelog entry.
+4. Run the theme preference test, production build, and `git diff --check`.
+
+### Verification
+
+- `node --test tests/themePreferences.test.mjs` passes (14/14), including the explicit hover/open 8px border regression assertion.
+- `pnpm build` and `git diff --check` pass.
+- Version `0.45.6-dev.2` and changelog entry added.

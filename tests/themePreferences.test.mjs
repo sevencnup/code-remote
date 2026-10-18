@@ -152,6 +152,7 @@ test('keeps Pixel composer button borders and frame artwork stable on hover', ()
   assert.match(styles, /\.remote-shell--theme-pixel \.send-button:hover:not\(:disabled\)\s*\{[^}]*border-image-source: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
   assert.match(styles, /\.remote-shell--theme-pixel \.composer-menu__trigger\s*\{[^}]*border: 8px solid transparent;[^}]*border-image: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
   assert.match(styles, /\.remote-shell--theme-pixel \.composer-menu__trigger:hover\s*\{[^}]*border-image-source: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
+  assert.match(styles, /\.remote-shell--theme-pixel\.remote-shell \.message-composer__footer :is\(\.composer-menu__trigger, \.send-button, \.stop-button, \.attach-button\):hover:not\(:disabled\),[\s\S]*?\.remote-shell--theme-pixel\.remote-shell \.message-composer__footer \.composer-menu--open \.composer-menu__trigger\s*\{[^}]*border: 8px solid transparent;[^}]*border-image: url\('\/pixel-theme\/frames\/square-window\.png'\)/)
 })
 
 test('normalizes colors and clamps transparency', () => {
