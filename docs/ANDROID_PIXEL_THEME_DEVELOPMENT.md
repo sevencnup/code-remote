@@ -119,3 +119,30 @@ PATCH: restore readable text in the existing Pixel theme and make pixel frame st
 - On-device screenshots confirmed the bundled Fusion Pixel face still hid text on the target phone after adding a system fallback. Pixel UI now uses Android's monospace face with default text paint flags; Chinese labels, conversation messages, and sidebar entries are visible.
 - Added drawable constant state for pixel frames. The latest device log sample contains no invalid `LayerDrawable` ownership warnings.
 - Debug build succeeded and `0.44.0-dev.7` / `versionCode 287` was installed and opened on `10.126.126.2:5555`; the chat and sidebar were visually checked.
+
+## Pixel Chinese raster follow-up
+
+### Classification
+
+PATCH: make Chinese text in the existing Pixel theme visibly pixelated while keeping it readable. Target Android version: `0.44.0-dev.9` (`versionCode 289`).
+
+### Design and implementation steps
+
+1. Keep Android's visible system monospace/fallback typeface for Pixel UI text; do not restore the bundled font that disappeared on the target phone.
+2. Render Pixel UI labels, user messages, and assistant Markdown through a low-resolution text surface, then enlarge it with nearest-neighbor sampling so Chinese glyphs have clear pixel edges.
+3. Leave code blocks, terminal output, editable inputs, and all non-Pixel themes on their existing rendering paths.
+4. Bound and invalidate any raster cache so scrolling and live activity updates do not retain unbounded bitmaps or show stale text.
+5. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect Chinese and Latin text in the chat and sidebar on the target phone.
+
+### Acceptance criteria
+
+- Chinese Pixel-theme labels and chat messages visibly use blocky, nearest-neighbor edges and remain readable at normal phone scale.
+- Latin labels receive the same Pixel-theme treatment; code blocks, terminal output, editable inputs, and other themes remain unchanged.
+- The Pixel theme text remains visible on the target device and the raster cache stays bounded.
+- The Android debug build succeeds and the installed package reports `0.44.0-dev.9` / `versionCode 289`.
+
+### Completion
+
+- Pixel-theme labels, sidebar entries, user text, and assistant Markdown now render at half resolution and use nearest-neighbor enlargement. Chinese and Latin characters have visible square edges while remaining legible on the phone.
+- Code blocks, diff review text, terminal output, editable fields, and other themes keep their existing rendering. The bitmap cache is capped at 8 MiB and entries are invalidated when text or view state changes.
+- Android debug build succeeded. `0.44.0-dev.9` / `versionCode 289` was installed on `10.126.126.2:5555`; screenshots of the chat and sidebar were visually checked. The captured log sample had no fatal exception, out-of-memory, or invalid drawable warnings.
