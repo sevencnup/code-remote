@@ -146,3 +146,52 @@ PATCH: make Chinese text in the existing Pixel theme visibly pixelated while kee
 - Pixel-theme labels, sidebar entries, user text, and assistant Markdown now render at half resolution and use nearest-neighbor enlargement. Chinese and Latin characters have visible square edges while remaining legible on the phone.
 - Code blocks, diff review text, terminal output, editable fields, and other themes keep their existing rendering. The bitmap cache is capped at 8 MiB and entries are invalidated when text or view state changes.
 - Android debug build succeeded. `0.44.0-dev.9` / `versionCode 289` was installed on `10.126.126.2:5555`; screenshots of the chat and sidebar were visually checked. The captured log sample had no fatal exception, out-of-memory, or invalid drawable warnings.
+
+## Pixel sidebar and header control sizing follow-up
+
+### Classification
+
+PATCH: correct clipped Pixel sidebar footer labels and icon sizing without changing navigation actions. Target Android version: `0.44.0-dev.10` (`versionCode 290`).
+
+### Design and implementation steps
+
+1. Give the three sidebar footer actions enough vertical room for both their icon and label, with clear label contrast.
+2. Keep conversation-row chat glyphs inside their selected-row frame with a small inset.
+3. Enlarge the main header's menu, terminal, and file-tree glyphs while keeping their button frames inside the header strip.
+4. Keep other themes and all action behavior unchanged.
+5. Increment the Android patch sequence and changelog, build a distinct APK, install it, and visually inspect the sidebar and header on the target phone.
+
+### Acceptance criteria
+
+- Sidebar footer shows Settings, Switch profile, and Reconnect labels below their icons without clipping.
+- Conversation icons stay inside row frames; the menu, terminal, and file-tree icons are visibly larger and do not spill over the header frame.
+- Other themes retain their current dimensions and the Android debug build succeeds with `0.44.0-dev.10` / `versionCode 290` installed.
+
+### Device inspection note
+
+- The `.10` build enlarged the header controls and inset the conversation glyph, but its three footer labels still did not render on the phone. The label issue is carried forward to the `.12` follow-up below.
+
+## Pixel footer label visibility follow-up
+
+### Classification
+
+PATCH: make all three existing sidebar footer labels visible and keep the Pixel controls within their frames. Target Android version: `0.44.0-dev.12` (`versionCode 292`).
+
+### Design and implementation steps
+
+1. Inspect the installed `.11` build on the phone; its enlarged footer still does not render the three labels through the Pixel raster text view.
+2. Render only the footer labels with Android's native text view, preserving the Pixel monospace face, palette, and enough height for each icon and label.
+3. Preserve the existing Pixel artwork, action behavior, equal-width footer layout, and non-Pixel styling.
+4. Keep the sidebar conversation glyph inset from its frame and retain the enlarged header menu, terminal, and file-tree controls.
+5. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect the footer and header on the target phone.
+
+### Acceptance criteria
+
+- Settings, Switch profile, and Reconnect labels are readable below their icons on the Pixel theme.
+- The conversation glyph remains inside its selected frame; enlarged header controls remain within the header strip.
+- Other themes and footer actions behave as before, and the Android debug build succeeds with `0.44.0-dev.12` / `versionCode 292` installed.
+
+### Completion
+
+- The `.11` screenshot confirmed that increasing the footer height alone did not make its rasterized labels appear. In `.12`, those three labels use Android's native TextView drawing with the Pixel monospace face and palette; the icons and all actions remain unchanged.
+- Android debug build succeeded, and `0.44.0-dev.12` / `versionCode 292` was installed on `10.126.126.2:5555`. The phone screenshot shows “设置”, “切换配置”, and “重连” beneath their icons; the selected chat glyph stays inside its frame and the top menu, terminal, and file-tree controls fit the header strip.
