@@ -195,3 +195,29 @@ PATCH: make all three existing sidebar footer labels visible and keep the Pixel 
 
 - The `.11` screenshot confirmed that increasing the footer height alone did not make its rasterized labels appear. In `.12`, those three labels use Android's native TextView drawing with the Pixel monospace face and palette; the icons and all actions remain unchanged.
 - Android debug build succeeded, and `0.44.0-dev.12` / `versionCode 292` was installed on `10.126.126.2:5555`. The phone screenshot shows “设置”, “切换配置”, and “重连” beneath their icons; the selected chat glyph stays inside its frame and the top menu, terminal, and file-tree controls fit the header strip.
+
+## Pixel sidebar, workspace footer, and queue contrast follow-up
+
+### Classification
+
+PATCH: correct Pixel-theme icon spacing, workspace paste control height, and queued-message text contrast. Target Android version: `0.44.0-dev.13` (`versionCode 293`).
+
+### Design and implementation steps
+
+1. Add inner spacing to the Pixel conversation row so its chat glyph clears the selected-row frame.
+2. Give the workspace tree's bottom Paste action a taller Pixel touch target and frame so the label no longer touches the border.
+3. Keep the white Pixel queue card and use dark, high-contrast text colors for its message, notice, and model/effort details.
+4. Keep all three changes scoped to Pixel and preserve existing actions and other themes.
+5. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect the three controls on the phone.
+
+### Acceptance criteria
+
+- The conversation chat icon has visible space from the selected-row frame.
+- The workspace Paste button frame clears the label vertically.
+- Queue text and metadata are legible on the light Pixel queue card.
+- The Android debug build succeeds and `0.44.0-dev.13` / `versionCode 293` is installed on the target phone.
+
+### Completion
+
+- Pixel conversation rows now inset their contents by 8dp, putting the chat glyph clear of the selected frame. The workspace Paste action has a 38dp minimum height with vertical padding, and the light queue card uses dark message, notice, and metadata text.
+- Android debug build succeeded, and `0.44.0-dev.13` / `versionCode 293` was installed on `10.126.126.2:5555`. The installed screenshot confirms the chat glyph no longer touches the selected frame.
