@@ -245,3 +245,75 @@ PATCH: remove the workspace path subtitle from the chat header so the header spa
 
 - The workspace-path subtitle and its renderer update were removed; the chat title is vertically centered in the available header column. Long titles continue to use the existing one-line ellipsis behavior.
 - Android debug build succeeded, and `0.44.0-dev.14` / `versionCode 294` was installed on `10.126.126.2:5555`. The device screenshot confirms the header no longer displays the path beneath the chat title.
+
+## Android chat header long-title fit follow-up
+
+### Classification
+
+PATCH: let long chat titles shrink within a bounded range before applying the existing ellipsis, while keeping the path subtitle hidden. Target Android version: `0.44.0-dev.15` (`versionCode 295`).
+
+### Design and implementation steps
+
+1. Keep the current header title size for names that already fit.
+2. Allow the title text to shrink by up to 8sp when the available header width is insufficient.
+3. Preserve the existing one-line layout, title actions, and hidden workspace path.
+4. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect a long chat title on the target phone.
+
+### Acceptance criteria
+
+- A long chat name uses a smaller readable size to fit the available header width before ellipsizing.
+- Short chat names retain the current title size; the workspace path remains hidden.
+- The Android debug build succeeds and `0.44.0-dev.15` / `versionCode 295` is installed on the target phone.
+
+### Completion
+
+- The title now auto-sizes down by up to 8sp before the existing ellipsis. The device screenshot showed the path remained hidden, but a long conversation name still exceeded the available one-line width; the follow-up below allows a second title line.
+- Android debug build succeeded, and `0.44.0-dev.15` / `versionCode 295` was installed on `10.126.126.2:5555`.
+
+## Android chat header wrapped-title follow-up
+
+### Classification
+
+PATCH: keep long chat names readable by allowing the header title to wrap to two lines while keeping the workspace path hidden. Target Android version: `0.44.0-dev.16` (`versionCode 296`).
+
+### Design and implementation steps
+
+1. Preserve the current title size and allow the active chat title to wrap to at most two lines.
+2. Keep the path subtitle hidden and leave the header actions in place.
+3. Keep ellipsis only for names that exceed both available lines.
+4. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect the header with a long chat name on the target phone.
+
+### Acceptance criteria
+
+- Long chat names use up to two title lines instead of shrinking immediately to fit one line.
+- Short names remain at the current size, and no workspace path appears below the title.
+- The Android debug build succeeds and `0.44.0-dev.16` / `versionCode 296` is installed on the target phone.
+
+### Completion
+
+- The `.16` build allowed a second line but changed the intended single-line header. The user clarified that the chat title should match the sidebar brand title size, so this layout is superseded by the follow-up below.
+- Android debug build succeeded, and `0.44.0-dev.16` / `versionCode 296` was installed on `10.126.126.2:5555`.
+
+## Android chat header title size follow-up
+
+### Classification
+
+PATCH: restore a single-line chat title and match the sidebar brand title font size while keeping the workspace path hidden. Target Android version: `0.44.0-dev.17` (`versionCode 297`).
+
+### Design and implementation steps
+
+1. Keep the active chat title on one line and remove title auto-sizing or wrapping.
+2. Use the same base font size as the sidebar brand title in the active theme.
+3. Keep the workspace path hidden and preserve all header actions.
+4. Increment the Android patch sequence and changelog, build a distinct APK, install it, and inspect the header and sidebar title sizes on the target phone.
+
+### Acceptance criteria
+
+- The chat title is one line and uses the same base font size as the sidebar brand title.
+- The workspace path remains hidden and header actions continue to render.
+- The Android debug build succeeds and `0.44.0-dev.17` / `versionCode 297` is installed on the target phone.
+
+### Completion
+
+- Restored a single-line title and matched the sidebar brand title's base size: 18sp for retro themes and 15sp for other themes. The workspace path remains hidden.
+- Android debug build succeeded, and `0.44.0-dev.17` / `versionCode 297` was installed on `10.126.126.2:5555`.
