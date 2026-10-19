@@ -16,3 +16,24 @@
 - AI 回复中的 `[标题](https://example.com)`、`https://example.com` 和 `www.example.com` 可点击。
 - 无效或不安全协议不会变成可执行链接。
 - 代码块中的 URL 仍按代码显示，不会转成链接。
+
+## Follow-up — stop auto-links before adjacent Chinese text
+
+### Classification
+
+PATCH: prevent ordinary Chinese text immediately following a bare URL from being included in the underlined link.
+
+### Design and implementation steps
+
+1. Extract inline link segmentation into a small pure helper so its boundaries can be regression-tested without rendering the full page.
+2. For bare HTTP(S), mailto, and `www.` URLs, stop the link before adjacent CJK prose; keep Markdown links' explicit URL boundaries unchanged.
+3. Add tests for a URL immediately followed by Chinese prose and for Markdown links with trailing prose.
+4. Increment the web patch development version and add a concise changelog entry.
+5. Run the focused link tests, theme tests, production build, and `git diff --check`.
+
+### Verification
+
+- Bare URLs now stop before adjacent Han, Hiragana, Katakana, Hangul, and full-width CJK punctuation; explicit Markdown links continue to use their closing parenthesis as the boundary.
+- `node --test tests/webAssistantMessageLinks.test.mjs tests/themePreferences.test.mjs` passes (18/18).
+- `pnpm build` and `git diff --check` pass.
+- Version `0.45.6-dev.5` and changelog entry added.
