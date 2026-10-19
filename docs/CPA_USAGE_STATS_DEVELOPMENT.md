@@ -23,7 +23,8 @@ Show token usage reported by the user's deployed CPA-Manager-Plus Manager Server
 4. [x] Add a settings section for the API connection, plus refresh and empty/error states in the usage view. Make the endpoint configurable so deployments can use a domain and reverse-proxy path.
 5. [x] Add a caller API key selector using an independent, unfiltered filter-options request. Send the selected hash in the main analytics request so summary, timeline, model, and account statistics all use the same filter; display only a short hash label.
 6. [x] Show the API's `summary.total_cost` as USD with two decimal places and explain that the amount uses prices configured in Manager.
-7. [x] Update package version and changelog as a MINOR feature; build and review only the files changed for this feature before committing.
+7. [x] Make the usage statistics content fill the available panel width.
+8. [x] Update package version and changelog as a PATCH improvement; build and review only the files changed for this feature before committing.
 
 ## Acceptance criteria
 
@@ -31,6 +32,7 @@ Show token usage reported by the user's deployed CPA-Manager-Plus Manager Server
 - The view presents summary token counts and upstream model/account statistics for today, 7 days, and 30 days; it does not call the destructive CLIProxyAPI queue endpoint.
 - A caller API key can be selected without revealing its key; all displayed statistics and the amount use the selected key, while the selector options remain available.
 - The amount is shown in USD using the Manager's configured model prices.
+- The statistics cards, trend, and breakdowns use the available panel width.
 - Incomplete/missing provider usage is shown as reported data, not reconstructed estimates. A Lightweight Panel or unavailable history produces a clear explanation.
 - URL prefixes, authorization failures, CORS/network failures, loading, empty data, and manual refresh are handled without disrupting chat.
 - TypeScript/Vite production build succeeds and `git diff --check` is clean.
