@@ -51,8 +51,8 @@ test('keeps the selected text for a later context-menu action', () => {
   )
 
   assert.match(longPressCapture, /longPressSelection = cacheTerminalSelection\(point\)/)
-  assert.match(touchEnd, /restoreSelectionAfterRelease\(selection\)/)
+  assert.match(touchEnd, /retainTouchSelection\(selection\)/)
   assert.doesNotMatch(touchEnd, /showContextMenu/)
-  assert.match(contextMenu, /cacheTerminalSelection\(\) \?\? lastTerminalSelection/)
+  assert.match(contextMenu, /retainedTouchSelection \?\? longPressSelection \?\? cacheTerminalSelection\(\)/)
   assert.match(contextMenu, /showContextMenu\(event\.clientX, event\.clientY, selection\.text\)/)
 })

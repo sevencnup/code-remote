@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/lib/sharedQueueVisibility.ts', imp
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 })
-const { visibleQueuedMessages } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+const { mergePendingQueuedMessages, visibleQueuedMessages } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 
 test('optimistic removal stays hidden through stale server snapshots and rolls back if needed', () => {
   const queue = [{ id: 'first' }, { id: 'second' }]
@@ -35,4 +35,18 @@ test('an unconfirmed send becomes visible for review, not silently retried', () 
   assert.deepEqual(visibleQueuedMessages([{ id: 'message', deliveryState: 'sending' }]), [])
   const unknown = [{ id: 'message', deliveryState: 'unverified', sendAttempt: { at: 'now' } }]
   assert.deepEqual(visibleQueuedMessages(unknown), unknown)
+})
+
+test('a pending local submission appears immediately and merges into its server queue position', () => {
+  const first = { id: 'first', deliveryState: 'pending' }
+  const submitting = { id: 'second', deliveryState: 'submitting' }
+  assert.deepEqual(mergePendingQueuedMessages([first], [submitting]), [first, submitting])
+  assert.deepEqual(mergePendingQueuedMessages([first, { id: 'second', deliveryState: 'pending' }], [submitting]), [first, submitting])
+  assert.deepEqual(mergePendingQueuedMessages([first, { id: 'second', deliveryState: 'pending' }], []), [first, { id: 'second', deliveryState: 'pending' }])
+})
+
+test('an authoritative unverified delivery takes priority over a local submitting preview', () => {
+  const submitting = { id: 'message', deliveryState: 'submitting' }
+  const unverified = { id: 'message', deliveryState: 'unverified', sendAttempt: { at: 'now' } }
+  assert.deepEqual(mergePendingQueuedMessages([unverified], [submitting]), [unverified])
 })
