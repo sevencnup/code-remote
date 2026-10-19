@@ -9,6 +9,7 @@ Show token usage reported by the user's deployed CPA-Manager-Plus Manager Server
 - CPA-Manager-Plus Full Mode persists request usage and exposes `POST /v0/management/monitoring/analytics`.
 - The endpoint accepts a time range, browser time zone, and include flags for summary, timeline, model statistics, and account statistics. It uses `Authorization: Bearer <Manager admin key>`.
 - The generated client API key used by Codex for model requests does not authorize this management endpoint.
+- The Manager UI's cached-token total is `cached_tokens + cache_read_tokens + cache_creation_tokens`; Codex Remote must use the same sum rather than displaying only `cached_tokens`.
 - CPA-Manager-Plus Lightweight Panel does not include the persistent Manager Server analytics database.
 - CLIProxyAPI's `/v0/management/usage-queue` endpoint pops queued events. Codex Remote must not read it directly because doing so consumes events that the Manager Server may need to persist.
 - Token counts reflect usage data reported through CLIProxyAPI's usage events. They cannot reconstruct requests made before collection was enabled or fill token fields an upstream provider did not report. Costs, where shown, are CPAMP estimates based on its configured model prices.
@@ -16,7 +17,7 @@ Show token usage reported by the user's deployed CPA-Manager-Plus Manager Server
 ## Implementation steps
 
 1. [x] Add a prominent settings module for the deployed Manager Server base URL and Manager admin key, clearly distinguish it from the Codex client API key, and test the analytics endpoint before saving. Send the admin key only in the Authorization header and never in query strings or logs.
-2. [x] Add an authenticated client for `POST /v0/management/monitoring/analytics`, including cancellation and actionable authorization/network/Full Mode errors.
+2. [x] Add an authenticated client for `POST /v0/management/monitoring/analytics`, including cancellation, actionable authorization/network/Full Mode errors, and cache-token aggregation matching the Manager UI.
 3. [x] Add an in-app usage view with selectable recent ranges, totals, hourly/daily timeline, model breakdown, and account breakdown. Use upstream response values without estimating token counts in Codex Remote.
 4. [x] Add a settings section for the API connection, plus refresh and empty/error states in the usage view. Make the endpoint configurable so deployments can use a domain and reverse-proxy path.
 5. [x] Update package version and changelog as a MINOR feature; build and review only the files changed for this feature before committing.
