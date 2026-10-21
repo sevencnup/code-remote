@@ -1,4 +1,4 @@
-# Codex Remote 项目规范
+# Code Remote 项目规范
 
 ## 版本号与修改分类
 

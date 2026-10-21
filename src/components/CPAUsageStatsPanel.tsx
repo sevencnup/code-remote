@@ -176,6 +176,7 @@ export function CPAUsageStatsPanel({
                 <div className="cpa-usage-range-tabs" role="group" aria-label="统计时间范围">
                   {([
                     ['today', '今天'],
+                    ['yesterday', '昨天'],
                     ['7d', '近 7 天'],
                     ['30d', '近 30 天'],
                   ] as const).map(([value, label]) => (
@@ -224,7 +225,7 @@ export function CPAUsageStatsPanel({
                 <div className="cpa-usage-breakdown-grid">
                   <section className="theme-settings-card cpa-usage-section">
                     <div className="theme-settings-card__heading"><div><h2>按模型</h2><p>{models.length} 个模型</p></div></div>
-                    {models.length ? <div className="cpa-usage-table-wrap"><table className="cpa-usage-table"><thead><tr><th>模型</th><th>请求</th><th>Token</th></tr></thead><tbody>{models.map((model) => <tr key={model.model}><td title={model.model}>{model.model || '未知模型'}</td><td>{count(model.calls)}</td><td>{count(model.total_tokens)}</td></tr>)}</tbody></table></div> : <div className="cpa-usage-empty">暂无模型数据。</div>}
+                    {models.length ? <div className="cpa-usage-table-wrap"><table className="cpa-usage-table"><thead><tr><th>模型</th><th>请求</th><th>金额</th><th>Token</th></tr></thead><tbody>{models.map((model) => <tr key={model.model}><td title={model.model}>{model.model || '未知模型'}</td><td>{count(model.calls)}</td><td>{typeof model.cost === 'number' && Number.isFinite(model.cost) ? moneyFormatter.format(model.cost) : '—'}</td><td>{count(model.total_tokens)}</td></tr>)}</tbody></table></div> : <div className="cpa-usage-empty">暂无模型数据。</div>}
                   </section>
                   <section className="theme-settings-card cpa-usage-section">
                     <div className="theme-settings-card__heading"><div><h2>按账号</h2><p>{accounts.length} 个接入账号</p></div></div>
@@ -233,7 +234,7 @@ export function CPAUsageStatsPanel({
                 </div>
               </>
             ) : null}
-            <p className="theme-settings-hint cpa-usage-disclaimer">Token 数量直接显示 CPAMP 收到的用量统计，不在 Codex Remote 中推算；金额按 Manager 中已配置的模型单价统计。若上游没有回报 Token 字段，或统计服务启用前的请求，不会出现在结果里。</p>
+            <p className="theme-settings-hint cpa-usage-disclaimer">Token 数量直接显示 CPAMP 收到的用量统计，不在 Code Remote 中推算；金额按 Manager 中已配置的模型单价统计。若上游没有回报 Token 字段，或统计服务启用前的请求，不会出现在结果里。</p>
           </>
         )}
       </div>

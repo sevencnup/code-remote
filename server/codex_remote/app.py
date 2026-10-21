@@ -1384,16 +1384,16 @@ class PairingAuth:
         except FileNotFoundError:
             return set()
         except OSError as error:
-            logger.warning("Could not read Codex Remote trusted-device state: %s", error)
+            logger.warning("Could not read Code Remote trusted-device state: %s", error)
             return set()
 
         try:
             parsed_state = json.loads(raw_state)
         except json.JSONDecodeError:
-            logger.warning("Ignoring malformed Codex Remote trusted-device state")
+            logger.warning("Ignoring malformed Code Remote trusted-device state")
             return set()
         if not isinstance(parsed_state, dict) or parsed_state.get("version") != 1:
-            logger.warning("Ignoring unsupported Codex Remote trusted-device state")
+            logger.warning("Ignoring unsupported Code Remote trusted-device state")
             return set()
         token_hashes = parsed_state.get("token_hashes")
         if not isinstance(token_hashes, list):
@@ -1492,7 +1492,7 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     try:
         auth.state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     except OSError as error:
-        raise RuntimeError(f"无法准备 Codex Remote 用户数据目录：{auth.state_path.parent}：{error}") from error
+        raise RuntimeError(f"无法准备 Code Remote 用户数据目录：{auth.state_path.parent}：{error}") from error
     state_path = Path(os.environ.get("CODEX_REMOTE_STATE_FILE", str(auth.state_path.parent / "shared-state.sqlite3"))).expanduser()
     shared_state = SharedStateStore(state_path)
     claude_code = ClaudeCodeServer(
@@ -1575,6 +1575,26 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
 
     shared_queue = SharedQueueService(shared_state, app_server, send_queued_turn, claude_code)
 
+    def paused_thread_view(thread_id: str, thread: dict[str, Any]) -> dict[str, Any]:
+        if is_claude_thread_id(thread_id) or not shared_state.is_paused(thread_id):
+            return thread
+        status = thread.get("status")
+        status_type = status.get("type") if isinstance(status, dict) else None
+        active_statuses = {"active", "inProgress", "running", "started"}
+        turns = thread.get("turns") if isinstance(thread.get("turns"), list) else []
+        latest = turns[-1] if turns and isinstance(turns[-1], dict) else None
+        latest_status = latest.get("status") if isinstance(latest, dict) else None
+        if status_type not in active_statuses and latest_status not in active_statuses:
+            return thread
+        result = {**thread, "status": {"type": "interrupted"}}
+        if latest_status in active_statuses:
+            completed_at = latest.get("completedAt") or thread.get("updatedAt") or latest.get("startedAt")
+            updated_latest = {**latest, "status": "interrupted"}
+            if completed_at is not None:
+                updated_latest["completedAt"] = completed_at
+            result["turns"] = [*turns[:-1], updated_latest]
+        return result
+
     async def thread_workspace_for_turn(thread_id: str) -> Path:
         bound_cwd = shared_state.thread_workspace(thread_id)
         if bound_cwd:
@@ -1590,7 +1610,7 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        print(f"\nCodex Remote 配对码：{auth.code}\n", flush=True)
+        print(f"\nCode Remote 配对码：{auth.code}\n", flush=True)
         try:
             deleted = await asyncio.to_thread(cleanup_expired_message_images, image_directory)
             if deleted:
@@ -1626,7 +1646,7 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
             shared_state.close()
             shutil.rmtree(runtime_directory, ignore_errors=True)
 
-    app = FastAPI(title="Codex Remote", version="0.43.0-dev.2", lifespan=lifespan)
+    app = FastAPI(title="Code Remote", version="0.43.0-dev.2", lifespan=lifespan)
     app.state.codex = app_server
     app.state.claude_code = claude_code
     app.state.auth = auth
@@ -1782,6 +1802,8 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
             result = []
             for thread in threads:
                 thread_id = thread.get("id")
+                if isinstance(thread_id, str):
+                    thread = paused_thread_view(thread_id, thread)
                 summary = browser_thread_summary(thread)
                 if isinstance(thread_id, str):
                     summary["canInterrupt"] = app_server.can_interrupt_thread(thread_id)
@@ -1864,10 +1886,11 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
             # Capture before reading: a concurrent append must leave this
             # response stale, rather than claiming to contain the new data.
             revision = app_server.thread_history_revision(thread_id)
-            thread = browser_thread(await app_server.read_thread(thread_id, tail_turns=tail_turns))
+            raw_thread = await app_server.read_thread(thread_id, tail_turns=tail_turns, compact=True)
+            thread = browser_thread(paused_thread_view(thread_id, raw_thread))
             thread["canInterrupt"] = app_server.can_interrupt_thread(thread_id)
             if revision is not None:
-                thread["historyRevision"] = revision
+                thread.setdefault("historyRevision", revision)
             bound_cwd = shared_state.thread_workspace(thread_id)
             if bound_cwd:
                 thread = {**thread, "cwd": bound_cwd}
@@ -2202,7 +2225,8 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     @app.post("/api/v1/codex/threads/{thread_id}/interrupt")
     async def interrupt_turn(thread_id: str, body: InterruptRequest | None = None) -> dict[str, bool]:
         try:
-            return {"interrupted": await shared_queue.pause_thread(thread_id, body.turn_id if body else None)}
+            result = await shared_queue.pause_thread(thread_id, body.turn_id if body else None)
+            return {"interrupted": result.interrupted, "stale": result.stale}
         except ClaudeThreadNotFoundError as error:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
         except CodexExternalTurnError as error:
@@ -2308,10 +2332,18 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
                 await websocket.send_json(event)
 
         async def send_events() -> None:
+            last_history_version: tuple[str, str] | None = None
             while True:
                 event = browser_event(await queue.get(), thread_id=subscribed_thread_id, filter_thread=filter_thread)
                 if event is None:
                     continue
+                if event.get("type") == "threads.changed" and subscribed_thread_id:
+                    revision = app_server.thread_history_revision(subscribed_thread_id)
+                    version = (subscribed_thread_id, revision) if revision is not None else None
+                    if version is not None and version != last_history_version:
+                        last_history_version = version
+                        await send_event({"type": "thread.history.changed", "threadId": subscribed_thread_id,
+                                          "revision": revision})
                 if event.get("method") in {"item/started", "item/completed"}:
                     params = event.get("params")
                     item = params.get("item") if isinstance(params, dict) else None
@@ -2421,6 +2453,7 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
                 hello.get("columns", 100),
                 hello.get("rows", 30),
                 thread_id=thread_id,
+                compact_prompt=hello.get("compactPrompt") is True,
             )
         except HTTPException as error:
             await websocket.send_json({"type": "error", "message": str(error.detail)})

@@ -40,8 +40,13 @@ internal object UiEnglish {
         "解除配对" to "Unpair", "解除当前电脑的配对？" to "Unpair this computer?", "解除" to "Unpair",
         "对话工作台" to "Chat workspace", "搜索聊天记录" to "Search chats", "搜索" to "Search",
         "清除搜索" to "Clear search", "新建对话" to "New chat", "最近对话" to "Recent chats",
-        "刷新对话列表" to "Refresh chats", "当前模式暂无对话" to "No chats in this mode",
+        "刷新对话列表" to "Refresh chats", "聊天记录" to "Chats", "搜索结果" to "Search results",
+        "Codex 对话" to "Codex chats", "Claude 对话" to "Claude chats",
+        "暂无对话" to "No chats yet", "该模式暂无对话" to "No chats in this mode",
+        "当前模式暂无对话" to "No chats in this mode",
         "没有匹配的对话" to "No matching chats", "继续输入名称可搜索其余对话" to "Keep typing to search more chats",
+        "只显示 Codex 对话" to "Show Codex chats only", "取消 Codex 筛选，显示全部聊天" to "Clear Codex filter and show all chats",
+        "只显示 Claude 对话" to "Show Claude chats only", "取消 Claude 筛选，显示全部聊天" to "Clear Claude filter and show all chats",
         "切换配置" to "Switch", "重连" to "Reconnect",
         "切换电脑连接" to "Switch computer", "当前连接" to "Current connection",
         "当前" to "Current", "已完成回复" to " has finished",
@@ -67,8 +72,10 @@ internal object UiEnglish {
         "继续回复失败" to "Could not continue reply", "暂停失败" to "Could not pause reply",
         "发送失败" to "Send failed", "新建对话失败" to "Could not create chat",
         "正在思考…" to "Thinking…", "正在等待连接…" to "Waiting for connection…",
+        "用时" to "Time",
         "回到底部" to "Scroll to bottom", "最近编辑文件" to "Recently edited files",
         "操作记录" to "Activity log", "展开或收起最近编辑文件" to "Toggle recently edited files",
+        "上一批" to "Previous batch", "下一批" to "Next batch", "上一页" to "Previous page", "下一页" to "Next page",
         "修改文件" to "Changed files", "查看文件" to "View file", "查看图片" to "View image",
         "关闭图片" to "Close image", "关闭文件预览" to "Close file preview",
         "关闭修改预览" to "Close diff preview", "文件" to "File", "文件夹" to "Folder",
@@ -135,7 +142,8 @@ internal object UiEnglish {
         "重新配对" to "Pair again", "重命名连接" to "Rename connection", "删除连接" to "Delete connection",
         "电脑服务暂时无法连接，已保留配对信息，正在重试。" to "Computer unavailable. Pairing is saved; retrying.",
         "正在连接电脑服务并验证配对码…" to "Connecting and verifying pairing code…",
-        "手机需要能访问电脑上的 Codex Remote 服务。地址和配对码只用于本机连接。" to "This phone must reach Codex Remote on your computer. The address and code stay on this device.",
+        "连接 Code Remote" to "Connect to Code Remote",
+        "手机需要能访问电脑上的 Code Remote 服务。地址和配对码只用于本机连接。" to "This phone must reach Code Remote on your computer. The address and code stay on this device.",
         "输入电脑网页地址和终端显示的匹配码。配对信息保存在本机，之后会自动重连。" to "Enter the computer address and pairing code. This device saves pairing for automatic reconnection.",
         "没有可用的图片选择器" to "No image picker available", "没有可用的文件选择器" to "No file picker available",
         "请输入 #RRGGBB 格式的颜色" to "Enter a color in #RRGGBB format",
@@ -170,7 +178,7 @@ internal object UiEnglish {
         "请输入电脑终端显示的匹配码。" to "Enter the pairing code shown on the computer.",
         "配对已失效，请重新输入匹配码。" to "Pairing expired. Enter the code again.",
         "服务器返回了不匹配的聊天记录。" to "Server returned a different chat.",
-        "关闭应用" to "Close app", "要关闭 Codex Remote 吗？" to "Close Codex Remote?",
+        "关闭应用" to "Close app", "要关闭 Code Remote 吗？" to "Close Code Remote?",
         "打开文件" to "Open file", "排队图片" to "Queued image",
     )
 
@@ -191,6 +199,10 @@ internal object UiEnglish {
         "正在调用 MCP 工具" to "Calling MCP tool",
         "正在调用工具" to "Calling tool",
         "正在处理" to "Working",
+        "已用" to "Elapsed",
+        "加入终端" to "Add to terminal", "终端运行" to "Run in terminal",
+        "当前终端不支持此脚本类型或路径" to "This terminal cannot run this script type or path",
+        "脚本命令发送失败" to "Could not send script command",
     )
 
     fun translate(value: String): String {
@@ -217,6 +229,8 @@ internal object UiEnglish {
             value.startsWith("显示更早的 ") -> value.replaceFirst("显示更早的 ", "Show ").replace(" 轮对话", " older turns")
             value.startsWith("点按重试 · ") -> value.replaceFirst("点按重试 · ", "Tap to retry · ")
             value.endsWith("\n点此重新加载") -> value.removeSuffix("\n点此重新加载") + "\nTap to reload"
+            value.startsWith("语音识别初始化失败") -> value.replaceFirst("语音识别初始化失败", "Could not initialize speech recognition")
+            value.startsWith("语音识别失败") -> value.replaceFirst("语音识别失败", "Speech recognition failed")
             value.startsWith("打开文件 ") -> value.replaceFirst("打开文件 ", "Open file ")
             value.startsWith("查看图片 ") -> value.replaceFirst("查看图片 ", "View image ")
             value.startsWith("思考开始时间 ") -> value.replaceFirst("思考开始时间 ", "Thinking started at ")

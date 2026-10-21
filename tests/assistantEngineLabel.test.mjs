@@ -30,6 +30,6 @@ test('assistant labels and Claude accents follow the active pane engine', () => 
 test('new conversation welcome titles use the active engine name', () => {
   assert.match(pageSource, /WelcomeTypingTitle text=\{remote\.activeEngine === 'claude-code' \? '与 Claude Code 完成一个伟大项目' : '与 Codex 完成一个伟大项目'\}/)
   assert.match(androidSource, /if \(currentMode == "claude-code"\) \{\s*"与 Claude Code 完成一个伟大项目"\s*\} else \{\s*"与 Codex 完成一个伟大项目"/)
-  assert.doesNotMatch(pageSource, /与 Codex Remote 完成一个伟大项目/)
-  assert.doesNotMatch(androidSource, /与 Codex Remote 完成一个伟大项目/)
+  assert.doesNotMatch(pageSource, /与 Code Remote 完成一个伟大项目/)
+  assert.doesNotMatch(androidSource, /与 Code Remote 完成一个伟大项目/)
 })

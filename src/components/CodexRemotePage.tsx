@@ -26,11 +26,13 @@ import {
   Link2,
   LoaderCircle,
   Menu,
+  MessageSquarePlus,
   MessagesSquare,
   Pause,
   Pencil,
   Pin,
   PinOff,
+  Play,
   Plus,
   Quote,
   RefreshCw,
@@ -47,6 +49,7 @@ import {
 import { useCodexRemote, type CodexActivity, type CodexActivityTimelineEntry, type CodexFileChange, type CodexOperation, type CodexRemoteController, type CodexThreadCompletion, type QueuedTurnMessage, type SelectThreadOptions } from '../hooks/useCodexRemote'
 import { codexRemoteClient, messagesFromThread, type ClaudeCodePermissionMode, type CodexApprovalPolicy, type CodexDocumentAttachment, type CodexImageAttachment, type CodexMessage, type CodexModel, type CodexThread, type CodexWorkspaceEntry, type CodexWorkspaceFile, type CodexWorkspaceImage, type CodexWorkspaceTree } from '../lib/codexRemoteClient'
 import { copyTextToClipboard } from '../lib/clipboard'
+import { isRunnableScriptPath } from '../lib/terminalPathCommand'
 import { clipboardTableToMarkdown } from '../lib/clipboardTable'
 import { parseMarkdownTableBlock } from '../lib/markdownTableParser.mjs'
 import { splitMessageInlineLinks } from '../lib/messageInlineLinks'
@@ -1016,6 +1019,9 @@ interface MessageComposerProps {
   canContinue: boolean
   continuationPending: boolean
   onRefresh: () => void
+  onCreateThread: () => void
+  createThreadDisabled: boolean
+  createThreadTitle: string
 }
 
 const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(function MessageComposer({
@@ -1066,6 +1072,9 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
   canContinue,
   continuationPending,
   onRefresh,
+  onCreateThread,
+  createThreadDisabled,
+  createThreadTitle,
 }, ref) {
   const composerEngine: ChatEngine = showCodexPreferences ? 'codex' : 'claude-code'
   const savedComposerHeight = composerHeightMemory.current?.[composerEngine]
@@ -2102,17 +2111,20 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
         />
       </div>
       <div className="message-composer__footer">
-        <div className="composer-preferences">
-          {showCodexPreferences ? <>
-            <ComposerMenu label="模型" value={composerSelectedModel} options={modelOptions} emptyLabel="读取模型…" disabled={!canConfigure || modelOptions.length === 0} open={openMenu === 'model'} onOpenChange={(open) => changeOpenMenu(open ? 'model' : null)} onChange={changeComposerModel} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
-            <ComposerMenu label="思考" value={composerSelectedEffort} options={composerReasoningOptions} emptyLabel="默认" disabled={!canConfigure || composerReasoningOptions.length === 0} open={openMenu === 'effort'} onOpenChange={(open) => changeOpenMenu(open ? 'effort' : null)} onChange={changeComposerEffort} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
-            <ComposerMenu label={approvalPolicyUpdating ? '授权更新中' : '授权'} value={selectedApprovalPolicy} options={authorizationOptions} emptyLabel="请求批准" disabled={!canCompose || Boolean(editingQueuedMessageId) || approvalPolicyUpdating} open={openMenu === 'approval'} onOpenChange={(open) => changeOpenMenu(open ? 'approval' : null)} onChange={(approvalPolicy) => onApprovalPolicyChange(approvalPolicy as CodexApprovalPolicy)} />
-          </> : <>
-            <ComposerMenu label="Claude 模型" value={composerSelectedModel} options={claudeModelOptions} emptyLabel="本机默认模型" disabled={!canConfigure} open={openMenu === 'model'} onOpenChange={(open) => changeOpenMenu(open ? 'model' : null)} onChange={changeComposerModel} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
-            <ComposerMenu label="思考等级" value={composerSelectedEffort} options={composerReasoningOptions} emptyLabel="本机默认" disabled={!canConfigure} open={openMenu === 'effort'} onOpenChange={(open) => changeOpenMenu(open ? 'effort' : null)} onChange={changeComposerEffort} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
-            <ComposerMenu label="权限模式" value={selectedClaudePermissionMode} options={claudePermissionModeOptions} emptyLabel="本机默认权限" disabled={!canConfigure || Boolean(editingQueuedMessageId)} open={openMenu === 'approval'} onOpenChange={(open) => changeOpenMenu(open ? 'approval' : null)} onChange={(mode) => onClaudePermissionModeChange(mode as ClaudeCodePermissionMode)} />
-          </>}
-          <span className="composer-hint">{imagesReady ? <ShieldCheck size={14} /> : <LoaderCircle className="spin" size={14} />}{!imagesReady ? '正在恢复待发送图片…' : editingQueuedMessageId ? 'Enter 确定 · Shift+Enter 换行' : continuationPending ? '继续会另起一轮；再次 Esc 取消续接' : 'Enter 发送 · Shift+Enter 换行'}</span>
+        <div className="composer-footer-start">
+          <button className="composer-new-thread-button" type="button" onClick={onCreateThread} disabled={createThreadDisabled} aria-label={createThreadTitle} title={createThreadTitle}><MessageSquarePlus size={17} aria-hidden="true" /></button>
+          <div className="composer-preferences">
+            {showCodexPreferences ? <>
+              <ComposerMenu label="模型" value={composerSelectedModel} options={modelOptions} emptyLabel="读取模型…" disabled={!canConfigure || modelOptions.length === 0} open={openMenu === 'model'} onOpenChange={(open) => changeOpenMenu(open ? 'model' : null)} onChange={changeComposerModel} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
+              <ComposerMenu label="思考" value={composerSelectedEffort} options={composerReasoningOptions} emptyLabel="默认" disabled={!canConfigure || composerReasoningOptions.length === 0} open={openMenu === 'effort'} onOpenChange={(open) => changeOpenMenu(open ? 'effort' : null)} onChange={changeComposerEffort} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
+              <ComposerMenu label={approvalPolicyUpdating ? '授权更新中' : '授权'} value={selectedApprovalPolicy} options={authorizationOptions} emptyLabel="请求批准" disabled={!canCompose || Boolean(editingQueuedMessageId) || approvalPolicyUpdating} open={openMenu === 'approval'} onOpenChange={(open) => changeOpenMenu(open ? 'approval' : null)} onChange={(approvalPolicy) => onApprovalPolicyChange(approvalPolicy as CodexApprovalPolicy)} />
+            </> : <>
+              <ComposerMenu label="Claude 模型" value={composerSelectedModel} options={claudeModelOptions} emptyLabel="本机默认模型" disabled={!canConfigure} open={openMenu === 'model'} onOpenChange={(open) => changeOpenMenu(open ? 'model' : null)} onChange={changeComposerModel} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
+              <ComposerMenu label="思考等级" value={composerSelectedEffort} options={composerReasoningOptions} emptyLabel="本机默认" disabled={!canConfigure || composerReasoningOptions.length === 0} open={openMenu === 'effort'} onOpenChange={(open) => changeOpenMenu(open ? 'effort' : null)} onChange={changeComposerEffort} footer={editingQueuedMessageId ? undefined : temporaryPreferencesToggle} temporary={temporaryPreferences && !editingQueuedMessageId} />
+              <ComposerMenu label="权限模式" value={selectedClaudePermissionMode} options={claudePermissionModeOptions} emptyLabel="本机默认权限" disabled={!canConfigure || Boolean(editingQueuedMessageId)} open={openMenu === 'approval'} onOpenChange={(open) => changeOpenMenu(open ? 'approval' : null)} onChange={(mode) => onClaudePermissionModeChange(mode as ClaudeCodePermissionMode)} />
+            </>}
+            <span className="composer-hint">{imagesReady ? <ShieldCheck size={14} /> : <LoaderCircle className="spin" size={14} />}{!imagesReady ? '正在恢复待发送图片…' : editingQueuedMessageId ? 'Enter 确定 · Shift+Enter 换行' : continuationPending ? '继续会另起一轮；再次 Esc 取消续接' : 'Enter 发送 · Shift+Enter 换行'}</span>
+          </div>
         </div>
         <div className="composer-actions">
           <span className={`attach-button attach-button--native${canAttachFiles ? '' : ' attach-button--disabled'}`} title={readingDocuments || readingImages ? '正在处理附件' : mobileLayout ? '附加图片、文档或源码文件' : '附加文档或源码文件'}>
@@ -2144,6 +2156,7 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
 interface WorkspaceExplorerProps {
   token: string
   theme: AppTheme
+  themePreferences: ThemePreferences
   engine: ChatEngine
   cwd?: string
   threadId?: string
@@ -2155,6 +2168,7 @@ interface WorkspaceExplorerProps {
   draft: string
   onInsertPath: (path: string, focus?: boolean) => void
   onAddToTerminal: (path: string) => void
+  onRunInTerminal: (path: string) => void
   onAddDocument: (document: CodexDocumentAttachment, focus?: boolean) => void
   mobileOpen: boolean
   mobileDragging: boolean
@@ -2200,13 +2214,13 @@ interface WorkspaceEntryContextMenu {
   x: number
   y: number
   root?: boolean
-  mobile?: boolean
 }
 
 interface WorkspaceTerminalRequest {
   id: number
   paneIndex: number
   path: string
+  action: 'directory' | 'run'
 }
 
 interface WorkspaceClipboard {
@@ -2302,7 +2316,7 @@ function concurrentPaneLimit() {
   return mobileLayout ? 3 : 5
 }
 
-const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine, cwd, threadId, canBindThreadWorkspace, onBindDirectory, previewRequest, previewContainerRef, onPreviewStateChange, draft, onInsertPath, onAddToTerminal, onAddDocument, mobileOpen, mobileDragging, onOpenMobile, onCloseMobile, panelRef }: WorkspaceExplorerProps) {
+const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, themePreferences, engine, cwd, threadId, canBindThreadWorkspace, onBindDirectory, previewRequest, previewContainerRef, onPreviewStateChange, draft, onInsertPath, onAddToTerminal, onRunInTerminal, onAddDocument, mobileOpen, mobileDragging, onOpenMobile, onCloseMobile, panelRef }: WorkspaceExplorerProps) {
   const [manualRoot, setManualRoot] = useState<string | null>(readWorkspaceExplorerRoot)
   const [rootInput, setRootInput] = useState(() => readWorkspaceExplorerRoot() ?? cwd ?? '')
   const [directories, setDirectories] = useState<Record<string, CodexWorkspaceTree>>({})
@@ -2345,10 +2359,15 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
   const viewStateCache = useRef(new Map<string, WorkspaceExplorerViewState>())
   const pendingScrollRestore = useRef<number | null>(null)
   const browsingRoot = manualRoot || cwd
+  const portalThemeStyle = theme === 'custom' ? themeRootStyle(themePreferences) : undefined
   const scopeKey = `${threadId ?? 'new'}:${cwd ?? ''}:${browsingRoot ?? ''}`
   const previewDirty = previewEditContent !== null && previewFile !== null && previewEditContent !== previewFile.content
   const currentViewState = useRef({ directories, expanded, selectedPaths })
   currentViewState.current = { directories, expanded, selectedPaths }
+
+  useEffect(() => {
+    if (!manualRoot) setRootInput(cwd ?? '')
+  }, [cwd, manualRoot])
 
   const directoryKey = (path: string) => path || '.'
   const rememberViewState = useCallback((key: string, state: WorkspaceExplorerViewState) => {
@@ -2388,23 +2407,6 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
     if (previewSaving) return
     clearPreview()
   }, [clearPreview, previewSaving])
-
-  useEffect(() => {
-    if (!previewPath) return
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return
-      event.preventDefault()
-      event.stopPropagation()
-      if (contextMenu || selectionContextMenu) {
-        setContextMenu(null)
-        setSelectionContextMenu(null)
-        return
-      }
-      closePreview()
-    }
-    document.addEventListener('keydown', closeOnEscape, true)
-    return () => document.removeEventListener('keydown', closeOnEscape, true)
-  }, [closePreview, contextMenu, previewPath, selectionContextMenu])
 
   const loadDirectory = useCallback(async (path: string, offset = 0) => {
     if (!browsingRoot) return
@@ -2722,17 +2724,16 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
   function openEntryContextMenu(event: ReactMouseEvent<HTMLButtonElement>, entry: CodexWorkspaceEntry) {
     event.preventDefault()
     event.stopPropagation()
-    const mobile = isMobileLayout() || Boolean(window.CodexRemoteAndroid?.changeEndpoint)
     const menuWidth = Math.min(theme === 'retro' ? 292 : 244, Math.max(0, window.innerWidth - 16))
     const menuHeight = theme === 'retro'
       ? Math.min(entry.kind === 'directory' ? 480 : 320, Math.max(0, window.innerHeight - 16))
-      : entry.kind === 'directory' ? (mobile ? 350 : 390) : 264
+      : entry.kind === 'directory' ? 390 : 264
     const x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8))
     const y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8))
     const paths = selectedPaths.includes(entry.path) ? selectedPaths : [entry.path]
     setSelectedPaths(paths)
     setSelectionContextMenu(null)
-    setContextMenu({ entry, paths, x, y, mobile })
+    setContextMenu({ entry, paths, x, y })
   }
 
   function openRootContextMenu(clientX: number, clientY: number) {
@@ -2746,7 +2747,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
     const name = browsingRoot.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || browsingRoot
     setSelectedPaths([])
     setSelectionContextMenu(null)
-    setContextMenu({ entry: { name, path: '', kind: 'directory' }, paths: [], x, y, root: true, mobile: isMobileLayout() || Boolean(window.CodexRemoteAndroid?.changeEndpoint) })
+    setContextMenu({ entry: { name, path: '', kind: 'directory' }, paths: [], x, y, root: true })
   }
 
   function handleRootContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
@@ -2811,6 +2812,12 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
 
   async function refreshWorkspaceDirectories(paths: string[]) {
     await Promise.all([...new Set(paths)].map((path) => loadDirectory(path)))
+  }
+
+  function refreshVisibleDirectories() {
+    const { directories: loaded, expanded: open } = currentViewState.current
+    const paths = Object.keys(open).filter((path) => open[path] && loaded[path])
+    void refreshWorkspaceDirectories(['', ...paths])
   }
 
   async function submitWorkspaceMutation(event: FormEvent<HTMLFormElement>) {
@@ -3095,14 +3102,15 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
     ? workspacePathsMissingFromDraft(draft, contextMenu.paths.map((path) => workspaceAbsolutePath(browsingRoot, path)))
     : []
   const contextMenuCanBind = Boolean(contextMenu && contextMenu.entry.kind === 'directory' && threadId)
-  const contextMenuCanOpenTerminal = Boolean(contextMenu && contextMenu.entry.kind === 'directory' && !contextMenu.mobile && !contextMenu.root && contextMenu.paths.length === 1)
+  const contextMenuCanOpenTerminal = Boolean(contextMenu && contextMenu.entry.kind === 'directory' && !contextMenu.root && contextMenu.paths.length === 1)
+  const contextMenuCanRunInTerminal = Boolean(contextMenu && contextMenu.entry.kind === 'file' && contextMenu.paths.length === 1 && isRunnableScriptPath(contextMenu.entry.path))
   const contextMenuCanCreate = contextMenu?.entry.kind === 'directory'
   const contextMenuCanRename = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length === 1)
   const contextMenuCanCopy = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
   const contextMenuCanCut = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
   const contextMenuCanPaste = Boolean(contextMenu && contextMenu.entry.kind === 'directory' && workspaceClipboard)
   const contextMenuCanDelete = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
-  const contextMenuHasQuickActions = contextMenuCanBind || contextMenuCanOpenTerminal || contextMenuMissingDraftPaths.length > 0
+  const contextMenuHasQuickActions = contextMenuCanBind || contextMenuCanOpenTerminal || contextMenuCanRunInTerminal || contextMenuMissingDraftPaths.length > 0
   const contextMenuHasFileActions = contextMenuCanRename || contextMenuCanCopy || contextMenuCanCut || contextMenuCanPaste
   return (
     <>
@@ -3111,7 +3119,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
           <div><span className="workspace-explorer__eyebrow">当前窗口</span><strong>文件</strong></div>
           <div className="workspace-explorer__header-actions">
             <button className="icon-button" type="button" onClick={openRootMenuFromButton} disabled={!browsingRoot} aria-label="新建或管理文件" title="新建或管理文件"><FilePlus2 size={15} /></button>
-            <button className="icon-button" type="button" onClick={() => void loadDirectory('')} disabled={!browsingRoot || rootLoading} aria-label="刷新文件目录" title="刷新文件目录"><RefreshCw className={rootLoading ? 'spin' : undefined} size={14} /></button>
+            <button className="icon-button" type="button" onClick={refreshVisibleDirectories} disabled={!browsingRoot || rootLoading} aria-label="刷新文件目录" title="刷新当前目录和已展开文件夹"><RefreshCw className={rootLoading ? 'spin' : undefined} size={14} /></button>
             <button className="icon-button workspace-explorer__close" type="button" onClick={onCloseMobile} aria-label="关闭文件窗口" title="关闭文件窗口"><X size={16} /></button>
           </div>
         </header>
@@ -3161,6 +3169,14 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
           className="workspace-file-preview-panel"
           closeButtonRef={previewCloseButton}
           onClose={closePreview}
+          onEscape={() => {
+            if (contextMenu || selectionContextMenu) {
+              setContextMenu(null)
+              setSelectionContextMenu(null)
+              return
+            }
+            closePreview()
+          }}
           onKeyDown={(event) => {
             if (!mobilePreviewDialog || event.key !== 'Tab') return
             const controls = event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled), [role="separator"][tabindex="0"]')
@@ -3251,12 +3267,13 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
         previewPortalTarget,
       ) : null}
       {contextMenu && typeof document !== 'undefined' ? createPortal(
-        <div ref={contextMenuElement} className={`thread-context-menu workspace-file-context-menu${theme === 'retro' ? ' workspace-file-context-menu--retro' : ''} remote-shell--theme-${theme}${theme === 'light' ? ' workspace-file-context-menu--light' : ''}`} style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>
+        <div ref={contextMenuElement} className={`thread-context-menu workspace-file-context-menu${theme === 'retro' ? ' workspace-file-context-menu--retro' : ''} remote-shell--theme-${theme}${theme === 'light' ? ' workspace-file-context-menu--light' : ''}`} style={{ ...portalThemeStyle, left: contextMenu.x, top: contextMenu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>
           <div className="workspace-file-context-menu__name" title={contextMenu.entry.path}>{contextMenu.entry.name}{contextMenu.paths.length > 1 ? ` · 已选 ${contextMenu.paths.length} 项` : ''}</div>
           {contextMenuHasQuickActions ? <div className="workspace-file-context-menu__group workspace-file-context-menu__group--primary">
             <span className="workspace-file-context-menu__group-label">快捷操作</span>
             {contextMenuCanBind ? <button type="button" role="menuitem" disabled={!canBindThreadWorkspace} onClick={() => void bindDirectoryToCurrentThread()}><FolderOpen size={14} />绑定当前聊天到此目录</button> : null}
             {contextMenuCanOpenTerminal ? <button type="button" role="menuitem" onClick={() => { const path = workspaceAbsolutePath(browsingRoot, contextMenu.entry.path); setContextMenu(null); onAddToTerminal(path) }}><TerminalIcon size={14} />添加到终端</button> : null}
+            {contextMenuCanRunInTerminal ? <button type="button" role="menuitem" onClick={() => { const path = workspaceAbsolutePath(browsingRoot, contextMenu.entry.path); setContextMenu(null); onRunInTerminal(path) }}><Play size={14} />终端运行</button> : null}
             {contextMenuMissingDraftPaths.length > 0 ? <button type="button" role="menuitem" onClick={() => { setContextMenu(null); onInsertPath(contextMenuMissingDraftPaths.join('\n'), !mobileOpen) }}><EngineBrandIcon engine={engine} size={14} />加入输入框</button> : null}
           </div> : null}
           {contextMenuCanCreate ? <div className="workspace-file-context-menu__group workspace-file-context-menu__group--create">
@@ -3333,7 +3350,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, theme, engine
         <div
           ref={selectionContextMenuElement}
           className={`thread-context-menu workspace-file-context-menu workspace-selection-context-menu remote-shell--theme-${theme}${theme === 'light' ? ' workspace-file-context-menu--light' : ''}`}
-          style={{ left: selectionContextMenu.x, top: selectionContextMenu.y, maxHeight: selectionContextMenu.mobile ? `${selectionContextMenu.maxHeight}px` : undefined }}
+          style={{ ...portalThemeStyle, left: selectionContextMenu.x, top: selectionContextMenu.y, maxHeight: selectionContextMenu.mobile ? `${selectionContextMenu.maxHeight}px` : undefined }}
           role="menu"
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -3405,6 +3422,10 @@ function RemoteChatPane({
 }: RemoteChatPaneProps) {
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalDirectoryRequest, setTerminalDirectoryRequest] = useState<WorkspaceTerminalRequest | null>(null)
+  const [terminalRunRequest, setTerminalRunRequest] = useState<WorkspaceTerminalRequest | null>(null)
+  const [terminalSessionCwd, setTerminalSessionCwd] = useState<string | undefined>()
+  const [terminalSessionId, setTerminalSessionId] = useState(0)
+  const [terminalSessionIsolated, setTerminalSessionIsolated] = useState(false)
   const handledDirectoryRequestId = useRef(0)
   const [engineSwitching, setEngineSwitching] = useState(false)
   const messageContainer = useRef<HTMLDivElement>(null)
@@ -3422,10 +3443,22 @@ function RemoteChatPane({
     if (!active || !directoryRequest || directoryRequest.id <= handledDirectoryRequestId.current) return
     handledDirectoryRequestId.current = directoryRequest.id
     onActivate()
-    setTerminalDirectoryRequest(directoryRequest)
+    if (directoryRequest.action === 'run') {
+      setTerminalRunRequest(directoryRequest)
+      setTerminalDirectoryRequest(null)
+      setTerminalSessionCwd(workspaceParentPath(directoryRequest.path))
+      setTerminalSessionIsolated(true)
+      setTerminalSessionId((value) => value + 1)
+    } else {
+      setTerminalDirectoryRequest(directoryRequest)
+      if (!terminalOpen) {
+        setTerminalSessionCwd(undefined)
+        setTerminalSessionIsolated(false)
+      }
+    }
     setTerminalOpen(true)
     onDirectoryRequestHandled(directoryRequest.id)
-  }, [active, directoryRequest, onActivate, onDirectoryRequestHandled])
+  }, [active, directoryRequest, onActivate, onDirectoryRequestHandled, terminalOpen])
 
   const activeThreadId = remote.activeThread?.id
   const approvalThreadId = typeof remote.approval?.params.threadId === 'string'
@@ -3675,6 +3708,9 @@ function RemoteChatPane({
                 setTerminalOpen(false)
               } else {
                 onActivate()
+                setTerminalSessionCwd(undefined)
+                setTerminalSessionIsolated(false)
+                setTerminalRunRequest(null)
                 setTerminalOpen(true)
               }
             }}
@@ -3754,7 +3790,7 @@ function RemoteChatPane({
               </div>
             </div>
           ) : null}
-          {remote.isRunning || remote.runningTurnId !== null || hasStreamingAssistant ? (
+          {!remote.loadingHistory && (remote.isRunning || remote.runningTurnId !== null || hasStreamingAssistant) ? (
             <div className="running-indicator" role="status" aria-live="polite">
               <div className="running-indicator__row">
                 <OperationActivityLine className={`running-indicator__activity${remote.activeEngine === 'claude-code' && !currentRunningOperation && (!remote.activity || remote.activity.label === '正在思考') ? ' running-indicator__activity--claude-thinking' : ''}`} operation={currentRunningOperation} activity={remote.activity} iconSize={15} />
@@ -3791,11 +3827,15 @@ function RemoteChatPane({
             </ChatOverlayPanel>
           )}>
             <TerminalDialog
+              key={terminalSessionId}
               token={token}
-              threadId={remote.activeThread?.id}
-              cwd={remote.activeThread?.cwd || remote.runtime.workspace || undefined}
+              engine={remote.activeEngine}
+              threadId={terminalSessionIsolated ? undefined : remote.activeThread?.id}
+              cwd={terminalSessionCwd ?? remote.activeThread?.cwd ?? remote.runtime.workspace ?? undefined}
               directoryRequest={terminalDirectoryRequest}
               onDirectoryRequestConsumed={(id) => setTerminalDirectoryRequest((current) => current?.id === id ? null : current)}
+              runRequest={terminalRunRequest}
+              onRunRequestConsumed={(id) => setTerminalRunRequest((current) => current?.id === id ? null : current)}
               onClose={() => setTerminalOpen(false)}
               onInsertText={(value) => {
                 if (value.length >= longPasteThreshold) {
@@ -3927,12 +3967,33 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
 
   useEffect(() => {
     let current = true
-    void codexRemoteClient.claudeStatus(token).then((status) => {
-      if (current) setClaudeCodeAvailable(status.available)
-    }).catch(() => {
-      if (current) setClaudeCodeAvailable(false)
-    })
-    return () => { current = false }
+    let checking = false
+    setClaudeCodeAvailable(null)
+    const refreshClaudeStatus = async () => {
+      if (!current || checking || document.visibilityState === 'hidden') return
+      checking = true
+      try {
+        const status = await codexRemoteClient.claudeStatus(token)
+        if (current) setClaudeCodeAvailable(status.available)
+      } catch {
+        if (current) setClaudeCodeAvailable(false)
+      } finally {
+        checking = false
+      }
+    }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== 'hidden') void refreshClaudeStatus()
+    }
+    void refreshClaudeStatus()
+    const interval = window.setInterval(() => void refreshClaudeStatus(), 30_000)
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      current = false
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
   }, [token])
   const openSettingsPanel = useCallback(() => {
     openPanelHistoryEntry('settings')
@@ -4019,7 +4080,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
     setThreadContextMenu({
       thread,
       x: Math.max(8, Math.min(x, window.innerWidth - 174)),
-      y: Math.max(8, Math.min(y, window.innerHeight - 226)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 290)),
     })
   }
 
@@ -4658,7 +4719,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
         if (completion && now - completion.completedAt < 120_000) {
           const thread = remote0.threads.find((item) => item.id === completion.threadId)
             ?? remotes.find((item) => item.activeThread?.id === completion.threadId)?.activeThread
-          const title = thread ? titleOf(thread) : 'Codex Remote'
+          const title = thread ? titleOf(thread) : 'Code Remote'
           notifySystemOnce(
             `completion:${completion.threadId}:${completion.completedAt}`,
             `${title} 已完成回复`,
@@ -4865,7 +4926,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
           claudeEffort: targetPreferences.claudeEffort ?? 'default',
           claudePermissionMode: targetPreferences.claudePermissionMode ?? 'default',
         })
-    if (paneIndex !== 0) await remote0.refreshThreads(true)
+    if (target !== remote0) remote0.upsertThread(thread)
     return thread
   }
 
@@ -5140,11 +5201,20 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
   }, [])
 
   const activeTitle = activeRemote.activeThread ? titleOf(activeRemote.activeThread) : '新对话'
-  const currentConnectionLabel = activeRemote.handedOff ? '已交还给本机' : isClaudeCodeThread
-    ? activeRemote.connection === 'connected'
-      ? claudeCodeAvailable === false ? 'Claude Code 不可用' : claudeCodeAvailable === null ? '正在检查 Claude Code' : 'Claude Code 就绪'
-      : activeRemote.connection === 'connecting' ? '正在连接' : '连接已断开'
-    : connectionLabel[activeRemote.connection]
+  const sidebarCodexStatus = activeRemote.handedOff
+    ? { label: 'Codex 已交还给本机', state: 'handoff' }
+    : activeRemote.connection === 'connected'
+      ? { label: 'Codex 已连接', state: 'connected' }
+      : activeRemote.connection === 'connecting'
+        ? { label: 'Codex 正在连接', state: 'connecting' }
+        : activeRemote.connection === 'unavailable'
+          ? { label: 'Codex 不可用', state: 'unavailable' }
+          : { label: 'Codex 连接已断开', state: 'disconnected' }
+  const sidebarClaudeStatus = claudeCodeAvailable === null
+    ? { label: '正在检查 Claude Code', state: 'connecting' }
+    : claudeCodeAvailable
+      ? { label: 'Claude Code 可用', state: 'connected' }
+      : { label: 'Claude Code 不可用', state: 'unavailable' }
   const androidEndpointBridgeAvailable = typeof window !== 'undefined' && typeof window.CodexRemoteAndroid?.changeEndpoint === 'function'
   const modelSupportsImages = isClaudeCodeThread || !chosenModel || !Array.isArray(chosenModel.inputModalities) || chosenModel.inputModalities.includes('image')
   const modelOptions = useMemo<ComposerMenuOption[]>(() => availableModels.flatMap((model) => {
@@ -5286,9 +5356,9 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
         </div>
       ) : null}
       {paneNotice ? <div className="pane-limit-notice" role="status">{paneNotice}</div> : null}
-      <aside ref={sidebarPanel} className={'remote-sidebar' + (sidebarOpen ? ' remote-sidebar--open' : '') + (sidebarDragging ? ' remote-sidebar--dragging' : '')} aria-label="Codex 对话记录" onTransitionEnd={(event) => { if (event.target === event.currentTarget && event.propertyName === 'transform' && !sidebarDragging) event.currentTarget.style.removeProperty('--sidebar-drag-offset') }}>
+      <aside ref={sidebarPanel} className={'remote-sidebar' + (sidebarOpen ? ' remote-sidebar--open' : '') + (sidebarDragging ? ' remote-sidebar--dragging' : '')} aria-label="聊天记录" onTransitionEnd={(event) => { if (event.target === event.currentTarget && event.propertyName === 'transform' && !sidebarDragging) event.currentTarget.style.removeProperty('--sidebar-drag-offset') }}>
         <div className="remote-sidebar__heading">
-          <div className="remote-brand"><img className="remote-brand__logo" src="/codex-remote.webp" alt="" /><span className="remote-brand__copy"><strong>Codex Remote</strong><small>Codex 远程工作台</small></span></div>
+          <div className="remote-brand"><img className="remote-brand__logo" src="/code-remote.webp" alt="" /><span className="remote-brand__copy"><strong>Code Remote</strong><small>代码助手远程工作台</small></span></div>
           <button className="icon-button remote-sidebar__collapse" type="button" aria-label={sidebarCollapsed ? '展开对话栏' : '收窄对话栏'} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? '展开对话栏' : '收窄对话栏'} onClick={() => { if (!sidebarCollapsed) { setSidebarSearch(''); setSidebarSelectionMode(false); setSelectedSidebarThreadIds(new Set()) } setSidebarCollapsed((collapsed) => !collapsed) }}>
             {sidebarCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
           </button>
@@ -5300,7 +5370,6 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
           {sidebarSearch ? <button type="button" aria-label="清空搜索" title="清空搜索" onClick={() => setSidebarSearch('')}><X size={14} /></button> : null}
         </div>
         <div className="new-thread-control">
-          <button className="new-thread-button" type="button" onClick={() => void createThread()} disabled={activeRemote.handedOff || activeRemote.connection !== 'connected' || activeRemote.loadingHistory || (isClaudeCodeThread && claudeCodeAvailable === false)} title={isClaudeCodeThread && claudeCodeAvailable === false ? 'Claude Code 不可用' : `新建${isClaudeCodeThread ? ' Claude Code' : ' Codex'}对话`}><span className="new-thread-button__icon"><Plus size={16} /></span><span>新建对话</span></button>
           <div className="sidebar-engine-filters" role="group" aria-label="按聊天模式筛选">
             {(['codex', 'claude-code'] as const).map((engine) => {
               const engineLabel = engine === 'claude-code' ? 'Claude' : 'Codex'
@@ -5357,7 +5426,17 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
           <button className={'sidebar-settings' + (usageStatsOpen ? ' sidebar-settings--active' : '')} type="button" aria-label="Token 用量统计" title="Token 用量统计" onClick={openUsageStatsPanel}><ChartNoAxesColumnIncreasing size={16} /><span>Token 用量</span></button>
           <button className={'sidebar-settings' + (settingsOpen ? ' sidebar-settings--active' : '')} type="button" aria-label="设置" title="设置" onClick={openSettingsPanel}><Settings2 size={16} /><span>设置</span></button>
         </div>
-        <footer className="remote-sidebar__footer"><i className={'status-dot status-dot--' + (activeRemote.handedOff ? 'handoff' : activeRemote.connection)} role="img" aria-label={currentConnectionLabel} title={currentConnectionLabel} /><span>{currentConnectionLabel}</span><button type="button" aria-label="退出配对" title="退出配对" onClick={() => void onUnpair()}>退出</button></footer>
+        <footer className="remote-sidebar__footer">
+          <div className="remote-sidebar__engine-statuses" role="group" aria-label="引擎状态">
+            {[sidebarCodexStatus, sidebarClaudeStatus].map((status) => (
+              <span key={status.label} className="remote-sidebar__engine-status" role="img" aria-label={status.label} title={status.label}>
+                <i className={'status-dot status-dot--' + status.state} aria-hidden="true" />
+                <span className="remote-sidebar__engine-status-label">{status.label}</span>
+              </span>
+            ))}
+          </div>
+          <button type="button" aria-label="退出配对" title="退出配对" onClick={() => void onUnpair()}>退出</button>
+        </footer>
       </aside>
 
       {sidebarOpen || sidebarDragging ? <button className={'sidebar-backdrop' + (sidebarDragging ? ' sidebar-backdrop--dragging' : '')} type="button" aria-label="关闭侧栏" onClick={() => setSidebarOpen(false)} /> : null}
@@ -5502,6 +5581,9 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
               canContinue={canContinue}
               continuationPending={Boolean(activeContinuation)}
               onRefresh={activeRemote.refreshActiveThread}
+              onCreateThread={() => { void createThread() }}
+              createThreadDisabled={activeRemote.handedOff || activeRemote.connection !== 'connected' || activeRemote.loadingHistory || (isClaudeCodeThread && claudeCodeAvailable === false)}
+              createThreadTitle={isClaudeCodeThread && claudeCodeAvailable === false ? 'Claude Code 不可用' : `新建${isClaudeCodeThread ? ' Claude Code' : ' Codex'}对话`}
             />
           </section>
           <div
@@ -5544,6 +5626,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
           <WorkspaceExplorer
             token={token}
             theme={themePreferences.theme}
+            themePreferences={themePreferences}
             engine={activeRemote.activeEngine}
             cwd={activeWorkspaceCwd}
             threadId={activeRemote.activeThread?.id}
@@ -5562,7 +5645,13 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
             onInsertPath={insertWorkspacePath}
             onAddToTerminal={(path) => {
               workspaceTerminalRequestSequence.current += 1
-              setWorkspaceTerminalRequest({ id: workspaceTerminalRequestSequence.current, paneIndex: selectedPaneIndex, path })
+              setWorkspaceTerminalRequest({ id: workspaceTerminalRequestSequence.current, paneIndex: selectedPaneIndex, path, action: 'directory' })
+              if (isMobileLayout() || Boolean(window.CodexRemoteAndroid?.changeEndpoint)) setWorkspaceOpen(false)
+            }}
+            onRunInTerminal={(path) => {
+              workspaceTerminalRequestSequence.current += 1
+              setWorkspaceTerminalRequest({ id: workspaceTerminalRequestSequence.current, paneIndex: selectedPaneIndex, path, action: 'run' })
+              if (isMobileLayout() || Boolean(window.CodexRemoteAndroid?.changeEndpoint)) setWorkspaceOpen(false)
             }}
             onAddDocument={addWorkspaceDocument}
             mobileOpen={workspaceOpen}
@@ -5712,7 +5801,7 @@ function ThemeSettingsPanel({ token, preferences, onChange, onClose, chatShortcu
     try {
       const granted = await requestSystemNotificationPermission()
       if (granted) onChange({ ...preferences, systemNotificationsEnabled: true })
-      else setNotificationError('没有获得通知权限。请在系统设置中允许 Codex Remote 发送通知后重试。')
+      else setNotificationError('没有获得通知权限。请在系统设置中允许 Code Remote 发送通知后重试。')
     } catch {
       setNotificationError('请求通知权限失败，请重试。')
     } finally {

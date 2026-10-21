@@ -61,6 +61,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.text.style.URLSpan
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -72,6 +73,8 @@ import android.view.Window
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
@@ -139,6 +142,17 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.ceil
 import kotlin.math.roundToInt
+
+private data class TextDocumentAttachmentPreview(
+    val name: String,
+    val content: String,
+    val characterCount: Int,
+)
+
+private data class ParsedUserMessageText(
+    val visibleText: String,
+    val documentAttachments: List<TextDocumentAttachmentPreview>,
+)
 
 private class PixelFrameNineSliceDrawable(
     private val bitmap: Bitmap,
@@ -779,6 +793,12 @@ class MainActivity : Activity() {
     private val connectionProfiles = mutableListOf<ConnectionProfile>()
     private val draftFilesByScope = mutableMapOf<String, MutableList<JSONObject>>()
     private val pendingUserMessages = mutableMapOf<String, MutableList<JSONObject>>()
+    private val remoteUserMessageOverlays = mutableMapOf<String, LinkedHashMap<String, JSONObject>>()
+    private val finishedTurnStates = linkedMapOf<String, JSONObject>()
+    private val pendingLiveTurnIds = mutableMapOf<String, String>()
+    private var turnLifecycleGeneration = 0L
+    private var threadListRefreshScheduled = false
+    private var lastThreadListRefreshAt = 0L
     private var activeConnectionId = ""
     @Volatile private var connectionGeneration = 0L
     @Volatile private var backgroundThreadDirty = false
@@ -799,6 +819,7 @@ class MainActivity : Activity() {
     private val selectedSidebarThreadIds = mutableSetOf<String>()
     private var sidebarSelectionMode = false
     private var sidebarSelectionBusy = false
+    private var sidebarEngineFilter: String? = null
     private var visibleSidebarThreadIds = emptyList<String>()
     private var running = false
     private val pausedThreadKeys = mutableSetOf<String>()
@@ -847,7 +868,7 @@ class MainActivity : Activity() {
     private var queueTouchActive = false
     private var queueRenderDirty = false
     private var expandedOperationIds = mutableSetOf<String>()
-    private var fullyExpandedOperationIds = mutableSetOf<String>()
+    private val operationPageIndexes = mutableMapOf<String, Int>()
     private var expandedFileChangeIds = mutableSetOf<String>()
     private var visibleHistoryTurnCount = DEFAULT_VISIBLE_HISTORY_TURNS
     private var selectedFiles = mutableListOf<JSONObject>()
@@ -872,14 +893,32 @@ class MainActivity : Activity() {
     private var pendingApproval: JSONObject? = null
     private var terminalOverlay: LinearLayout? = null
     private var terminalPositionListener: View.OnLayoutChangeListener? = null
-    private var terminalSocket: WebSocket? = null
-    private var terminalOutput: TextView? = null
+    @Volatile private var terminalSocket: WebSocket? = null
+    private var terminalOutput: TerminalOutputView? = null
+    private var terminalOutputScroll: ScrollView? = null
     private var terminalStatusView: TextView? = null
-    private var terminalDraftInput: EditText? = null
+    private var terminalInputSink: TerminalInputSink? = null
+    private var terminalResizeRunnable: Runnable? = null
+    private var terminalRenderRunnable: Runnable? = null
+    private var terminalInputFocusPending = false
+    @Volatile private var terminalColumns = 88
+    @Volatile private var terminalRows = 26
+    private var pendingTerminalDirectory: String? = null
+    private var pendingTerminalRun: String? = null
+    private var terminalRunCwd: String? = null
+    private var terminalShellName: String? = null
     private var terminalScreen = TerminalScreenBuffer(88, 26)
+    private val terminalScreenCache = linkedMapOf<String, Pair<TerminalScreenBuffer, Boolean>>()
+    private var terminalScreenKey: String? = null
+    private var terminalThreadId: String? = null
     @Volatile private var terminalReady = false
+    private var terminalPersistent = false
     private var terminalImeVisible = false
+    private var terminalLockedImeInset = 0
+    private var terminalLockedContentBottom = 0
     private var terminalImeHiddenUntil = 0L
+    private var terminalScrollInteractionRevision = 0L
+    private var terminalScrollGestureActive = false
     private var attachRequestActive = false
     private var attachmentPickerScope: String? = null
     private var restoreImeAfterAttachment = false
@@ -892,6 +931,7 @@ class MainActivity : Activity() {
     private var systemInsetTop = 0
     private var systemInsetRight = 0
     private var systemInsetBottom = 0
+    private var chatContentBottomInset = 0
     private var imeInsetVisible = false
     private var imeFollowMessageBottom = false
     private var imeFollowScrollQueued = false
@@ -934,6 +974,7 @@ class MainActivity : Activity() {
     private var activeActivityTimer: TextView? = null
     private var activityShimmerAnimator: ValueAnimator? = null
     private var activeActivityStartedAt = 0L
+    private var activeActivityTimerTurnId: String? = null
     private var liveActivityItem: JSONObject? = null
     private var liveActivityItemCompleted = false
     private var liveActivityTurnId: String? = null
@@ -941,9 +982,10 @@ class MainActivity : Activity() {
     private val activityTick = object : Runnable {
         override fun run() {
             if (!running || activeActivityTimer == null) return
-            val elapsed = ((System.currentTimeMillis() - activeActivityStartedAt).coerceAtLeast(0L) / 1000L)
-            activeActivityTimer?.text = "已用 ${elapsed / 60L}分${elapsed % 60L}秒"
-            handler.postDelayed(this, 1000L)
+            val elapsedMillis = (SystemClock.elapsedRealtime() - activeActivityStartedAt).coerceAtLeast(0L)
+            activeActivityTimer?.text = "${tr("已用")} ${formatTurnDuration(elapsedMillis)}"
+            val nextSecond = (1000L - elapsedMillis % 1000L).coerceAtLeast(16L)
+            handler.postDelayed(this, nextSecond)
         }
     }
     private lateinit var welcomeTitleView: TextView
@@ -959,6 +1001,8 @@ class MainActivity : Activity() {
     private lateinit var sidebarNewThreadButton: LinearLayout
     private lateinit var sidebarNewThreadIcon: ImageView
     private lateinit var sidebarNewThreadLabel: TextView
+    private lateinit var sidebarCodexFilterButton: ImageButton
+    private lateinit var sidebarClaudeFilterButton: ImageButton
     private val sidebarActionAccentViews = mutableListOf<Pair<ImageView, TextView>>()
     private lateinit var sidebarBrandMark: ImageView
     private lateinit var sendButton: ImageView
@@ -1010,8 +1054,9 @@ class MainActivity : Activity() {
     private val refreshRunnable = object : Runnable {
         override fun run() {
             if (token.isNotBlank() && foreground) {
+                // Metadata is a cheap backstop even when the socket appears healthy.
+                refreshThreads(false)
                 if (!socketConnected) {
-                    refreshThreads(false)
                     refreshActiveThread(false)
                     refreshQueue(false)
                     connectSocket()
@@ -1168,11 +1213,14 @@ class MainActivity : Activity() {
             webPreviewPopup?.isShowing == true -> closeWebPreview()
             terminalOverlay != null && (terminalImeVisible || System.currentTimeMillis() < terminalImeHiddenUntil) -> {
                 terminalImeHiddenUntil = 0L
-                val input = terminalDraftInput
+                terminalLockedImeInset = 0
+                terminalLockedContentBottom = 0
+                val input = terminalInputSink
                 if (input != null) {
                     (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
                         ?.hideSoftInputFromWindow(input.windowToken, 0)
                 }
+                root.requestApplyInsets()
             }
             terminalOverlay != null -> closeTerminal()
             workspaceVisible -> handleWorkspaceBack()
@@ -1293,8 +1341,8 @@ class MainActivity : Activity() {
             background = rounded(PANEL_INSET, dp(12))
         }
         card.addView(mark, LinearLayout.LayoutParams(dp(48), dp(48)).apply { bottomMargin = dp(18) })
-        card.addView(label("CODEX REMOTE · ANDROID", 10, MUTED, true), widthWrap())
-        card.addView(label("连接本机 Codex", 25, TEXT, true).apply { setPadding(0, dp(8), 0, dp(4)) }, widthWrap())
+        card.addView(label("CODE REMOTE · ANDROID", 10, MUTED, true), widthWrap())
+        card.addView(label("连接 Code Remote", 25, TEXT, true).apply { setPadding(0, dp(8), 0, dp(4)) }, widthWrap())
         card.addView(label("输入电脑网页地址和终端显示的匹配码。配对信息保存在本机，之后会自动重连。", 13, MUTED).apply {
             setLineSpacing(dp(2).toFloat(), 1.2f)
         }, widthWrap())
@@ -1318,7 +1366,7 @@ class MainActivity : Activity() {
             setLineSpacing(dp(2).toFloat(), 1.2f)
         }
         card.addView(status, widthWrap())
-        card.addView(label("手机需要能访问电脑上的 Codex Remote 服务。地址和配对码只用于本机连接。", 11, MUTED).apply {
+        card.addView(label("手机需要能访问电脑上的 Code Remote 服务。地址和配对码只用于本机连接。", 11, MUTED).apply {
             setPadding(0, dp(24), 0, 0)
         }, widthWrap())
         connect.setOnClickListener {
@@ -1396,6 +1444,10 @@ class MainActivity : Activity() {
         threads = JSONArray()
         models = JSONArray()
         queuedMessages = JSONArray()
+        remoteUserMessageOverlays.clear()
+        finishedTurnStates.clear()
+        pendingLiveTurnIds.clear()
+        turnLifecycleGeneration++
         running = false
         pendingApproval = null
         pendingCompletionNoticeThreadId = null
@@ -1477,25 +1529,35 @@ class MainActivity : Activity() {
                 systemInsetTop = systemBars.top
                 systemInsetRight = systemBars.right
                 systemInsetBottom = systemBars.bottom
+                if (terminalOverlay != null && terminalInputSink?.hasFocus() == true && keyboardVisible) {
+                    terminalLockedImeInset = max(terminalLockedImeInset, bottom)
+                } else if (terminalOverlay != null && !keyboardVisible && terminalInputSink?.hasActiveComposition != true) {
+                    terminalLockedImeInset = 0
+                    terminalLockedContentBottom = 0
+                }
+                val effectiveBottom = max(bottom, terminalLockedImeInset)
+                chatContentBottomInset = effectiveBottom
                 if (view.paddingLeft != 0 || view.paddingTop != 0 ||
                     view.paddingRight != 0 || view.paddingBottom != 0
                 ) view.setPadding(0, 0, 0, 0)
+                val contentBottom = effectiveBottom + if (keyboardVisible && queueEditItem != null) dp(8) else 0
                 if (content.paddingLeft != 0 || content.paddingTop != 0 ||
-                    content.paddingRight != 0 || content.paddingBottom != bottom
+                    content.paddingRight != 0 || content.paddingBottom != contentBottom
                 ) {
-                    content.setPadding(0, 0, 0, bottom)
+                    content.setPadding(0, 0, 0, contentBottom)
                 }
                 if (systemInsetsChanged) {
                     updateInsetAwareOverlays()
                     overlaysInitialized = true
                 }
-                val terminalKeyboardVisible = keyboardVisible && terminalDraftInput?.hasFocus() == true
+                val terminalKeyboardVisible = keyboardVisible && terminalInputSink?.hasFocus() == true
                 terminalImeHiddenUntil = when {
                     terminalKeyboardVisible -> 0L
                     terminalImeVisible -> System.currentTimeMillis() + 500L
                     else -> terminalImeHiddenUntil
                 }
                 terminalImeVisible = terminalKeyboardVisible
+                positionTerminalOverlay()
                 if (keyboardJustOpened && imeFollowMessageBottom) {
                     scheduleImeMessageBottomFollow()
                 } else if (!keyboardVisible) {
@@ -1528,12 +1590,24 @@ class MainActivity : Activity() {
                     imeAnimationDepth = (imeAnimationDepth - 1).coerceAtLeast(0)
                     if (imeAnimationDepth == 0) {
                         view.rootWindowInsets?.let(update)
+                        if (terminalOverlay != null) {
+                            terminalOutputScroll?.post { updateTerminalDimensions(forceSend = true) }
+                        }
                         if (imeInsetVisible && imeFollowMessageBottom) scheduleImeMessageBottomFollow()
                     }
                 }
             }
         })
         view.requestApplyInsets()
+    }
+
+    private fun updateQueueEditImeSpacing() {
+        if (!::page.isInitialized) return
+        val extraGap = if (imeInsetVisible && queueEditItem != null) dp(8) else 0
+        val bottom = chatContentBottomInset + extraGap
+        if (page.paddingLeft != 0 || page.paddingTop != 0 || page.paddingRight != 0 || page.paddingBottom != bottom) {
+            page.setPadding(0, 0, 0, bottom)
+        }
     }
 
     private fun isMessageListNearBottom(): Boolean {
@@ -1710,7 +1784,7 @@ class MainActivity : Activity() {
         headerView.addView(menu, LinearLayout.LayoutParams(actionSize, actionSize))
         val titleColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), 0) }
         val titleBaseSize = if (retroTheme) 18 else 15
-        titleView = label("Codex Remote", titleBaseSize, if (retroTheme) ANDROID1_TITLE_TEXT else TEXT, true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        titleView = label("Code Remote", titleBaseSize, if (retroTheme) ANDROID1_TITLE_TEXT else TEXT, true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         titleColumn.addView(titleView, widthWrap())
         headerView.addView(titleColumn, LinearLayout.LayoutParams(0, WRAP, 1f))
         val targetMode = modeSwitchTarget()
@@ -1860,7 +1934,7 @@ class MainActivity : Activity() {
         composerGlowRunning = false
         composerDock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(2), dp(12), dp(12))
+            setPadding(dp(12), dp(2), dp(12), dp(4))
             background = ColorDrawable(Color.TRANSPARENT)
             clipChildren = false
             clipToPadding = false
@@ -2120,17 +2194,17 @@ class MainActivity : Activity() {
             setPadding(dp(2), 0, 0, dp(2))
         }
         sidebarBrandMark = ImageView(this).apply {
-            setImageResource(R.drawable.codex_remote)
+            setImageResource(R.drawable.code_remote)
             imageTintList = null
             background = if (pixelTheme) pixelFrameBackground(R.drawable.pixel_frame_square, PANEL_INSET)
                 else rounded(PANEL_INSET, dp(10))
             val markPadding = if (pixelTheme) dp(6) else dp(8)
             setPadding(markPadding, markPadding, markPadding, markPadding)
-            contentDescription = "Codex Remote"
+            contentDescription = "Code Remote"
         }
         brand.addView(sidebarBrandMark, LinearLayout.LayoutParams(dp(if (retroTheme) 40 else 36), dp(if (retroTheme) 40 else 36)).apply { rightMargin = dp(10) })
         val brandCopy = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-        brandCopy.addView(label("Codex Remote", if (retroTheme) 18 else 15, TEXT, true), widthWrap())
+        brandCopy.addView(label("Code Remote", if (retroTheme) 18 else 15, TEXT, true), widthWrap())
         brandCopy.addView(label("对话工作台", if (retroTheme) 12 else 10, MUTED), widthWrap())
         brand.addView(brandCopy, LinearLayout.LayoutParams(0, WRAP, 1f))
         drawer.addView(brand, LinearLayout.LayoutParams(MATCH, dp(44)))
@@ -2190,7 +2264,17 @@ class MainActivity : Activity() {
         sidebarNewThreadButton.addView(sidebarNewThreadIcon, LinearLayout.LayoutParams(dp(newThreadIconSize), dp(newThreadIconSize)).apply { rightMargin = dp(if (pixelTheme) 8 else 10) })
         sidebarNewThreadLabel = label("新建对话", if (pixelTheme) 14 else 13, TEXT, true)
         sidebarNewThreadButton.addView(sidebarNewThreadLabel, widthWrap())
-        drawer.addView(sidebarNewThreadButton, LinearLayout.LayoutParams(MATCH, dp(if (retroTheme) 44 else 43)).apply { topMargin = dp(7) })
+        val newThreadControl = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val controlHeight = dp(if (retroTheme) 44 else 43)
+        newThreadControl.addView(sidebarNewThreadButton, LinearLayout.LayoutParams(0, controlHeight, 1f))
+        sidebarCodexFilterButton = sidebarEngineFilterButton("codex")
+        sidebarClaudeFilterButton = sidebarEngineFilterButton("claude-code")
+        newThreadControl.addView(sidebarCodexFilterButton, LinearLayout.LayoutParams(dp(36), dp(36)).apply { leftMargin = dp(5) })
+        newThreadControl.addView(sidebarClaudeFilterButton, LinearLayout.LayoutParams(dp(36), dp(36)).apply { leftMargin = dp(4) })
+        drawer.addView(newThreadControl, LinearLayout.LayoutParams(MATCH, controlHeight).apply { topMargin = dp(7) })
         updateSidebarModeAccent()
 
         val recentHeading = LinearLayout(this).apply {
@@ -2203,7 +2287,9 @@ class MainActivity : Activity() {
             imageTintList = null
             contentDescription = "聊天记录"
         }, LinearLayout.LayoutParams(dp(17), dp(17)).apply { rightMargin = dp(6) })
-        recentHeading.addView(label("聊天记录", if (pixelTheme) 12 else 11, MUTED, true), LinearLayout.LayoutParams(0, dp(34), 1f))
+        recentHeading.addView(label("聊天记录", if (pixelTheme) 12 else 11, MUTED, true).apply {
+            tag = "sidebar_thread_heading"
+        }, LinearLayout.LayoutParams(0, dp(34), 1f))
         recentHeading.addView(label("选择", if (pixelTheme) 12 else 11, SUBTLE, true).apply {
             tag = "sidebar_selection_toggle"
             gravity = Gravity.CENTER
@@ -2361,7 +2447,7 @@ class MainActivity : Activity() {
     private fun renderHeader() {
         if (!::titleView.isInitialized) return
         val title = activeThread?.let { threadTitle(it) }
-            ?: if (activeThreadId == null) "新对话" else "Codex Remote"
+            ?: if (activeThreadId == null) "新对话" else "Code Remote"
         titleView.text = title
         titleView.setTextColor(if (retroTheme) ANDROID1_TITLE_TEXT else TEXT)
         if (::modeButton.isInitialized) {
@@ -2384,9 +2470,9 @@ class MainActivity : Activity() {
 
     private fun updateSidebarBrand() {
         if (!::sidebarBrandMark.isInitialized) return
-        sidebarBrandMark.setImageResource(R.drawable.codex_remote)
+        sidebarBrandMark.setImageResource(R.drawable.code_remote)
         sidebarBrandMark.imageTintList = null
-        sidebarBrandMark.contentDescription = "Codex Remote"
+        sidebarBrandMark.contentDescription = "Code Remote"
     }
 
     private fun threadTitleKey(threadId: String) = "$activeConnectionId:$threadId"
@@ -2450,6 +2536,78 @@ class MainActivity : Activity() {
             icon.imageTintList = retroIconTint(actionColor)
             label.setTextColor(actionColor)
         }
+        if (::sidebarCodexFilterButton.isInitialized && ::sidebarClaudeFilterButton.isInitialized) {
+            updateSidebarEngineFilterButtons()
+        }
+    }
+
+    private fun sidebarEngineFilterButton(engine: String): ImageButton = ImageButton(this).apply {
+        setBrandIcon(this, engine)
+        scaleType = ImageView.ScaleType.CENTER_INSIDE
+        setPadding(dp(8), dp(8), dp(8), dp(8))
+        isFocusable = true
+        isClickable = true
+        setOnClickListener {
+            sidebarEngineFilter = if (sidebarEngineFilter == engine) null else engine
+            updateSidebarEngineFilterButtons()
+            renderSidebar(force = true)
+        }
+    }
+
+    private fun sidebarEngineFilterDescription(engine: String, active: Boolean): String = when {
+        engine == "claude-code" && active -> "取消 Claude 筛选，显示全部聊天"
+        engine == "claude-code" -> "只显示 Claude 对话"
+        active -> "取消 Codex 筛选，显示全部聊天"
+        else -> "只显示 Codex 对话"
+    }
+
+    private fun updateSidebarEngineFilterButtons() {
+        listOf("codex" to sidebarCodexFilterButton, "claude-code" to sidebarClaudeFilterButton).forEach { (engine, button) ->
+            val active = sidebarEngineFilter == engine
+            val tint = brandIconTint(engine)
+            val description = tr(sidebarEngineFilterDescription(engine, active))
+            button.imageTintList = ColorStateList.valueOf(tint)
+            button.contentDescription = description
+            button.tooltipText = description
+            button.isSelected = active
+            button.stateListAnimator = null
+            button.background = when {
+                pixelTheme -> {
+                    val resting = pixelFrameBackground(
+                        if (active) R.drawable.pixel_frame_active else R.drawable.pixel_frame_square,
+                        if (active) colorWithAlpha(tint, .20f) else PIXEL_PANEL_INSET,
+                    )
+                    android.graphics.drawable.StateListDrawable().apply {
+                        val pressed = pixelBlockBackground(if (active) colorWithAlpha(tint, .30f) else PIXEL_PANEL_INSET)
+                        addState(intArrayOf(android.R.attr.state_pressed), pressed)
+                        addState(intArrayOf(android.R.attr.state_focused), pressed)
+                        addState(intArrayOf(), resting)
+                    }
+                }
+                retroTheme -> lollipopRipple(
+                    if (active) rounded(
+                        if (engine == "claude-code") Color.rgb(248, 233, 226) else LOLLIPOP_PRIMARY_LIGHT,
+                        0,
+                        colorWithAlpha(tint, .45f),
+                        dp(1),
+                    ) else ColorDrawable(Color.TRANSPARENT),
+                    colorWithAlpha(tint, .2f),
+                )
+                else -> {
+                    val resting = if (active) rounded(
+                        colorWithAlpha(tint, if (lightTheme) .14f else .20f),
+                        dp(7),
+                        colorWithAlpha(tint, .4f),
+                        dp(1),
+                    ) else rounded(Color.TRANSPARENT, dp(7))
+                    android.graphics.drawable.RippleDrawable(
+                        ColorStateList.valueOf(colorWithAlpha(tint, .18f)),
+                        resting,
+                        rounded(Color.WHITE, dp(7)),
+                    )
+                }
+            }
+        }
     }
 
     private fun threadLastActiveMillis(thread: JSONObject): Long {
@@ -2480,7 +2638,7 @@ class MainActivity : Activity() {
     }
 
     private fun bulkSelectedThreads(): List<JSONObject> = (0 until threads.length()).mapNotNull { threads.optJSONObject(it) }
-        .filter { it.optString("engine", "codex") == currentMode && it.optString("id") in selectedSidebarThreadIds }
+        .filter { it.optString("id") in selectedSidebarThreadIds }
 
     private fun sidebarSelectionAction(title: String, color: Int = SUBTLE, action: () -> Unit): TextView =
         label(title, 11, color, true).apply {
@@ -2544,7 +2702,7 @@ class MainActivity : Activity() {
         val selected = bulkSelectedThreads()
         if (selected.isEmpty()) return
         val ids = selected.map { it.optString("id") }
-        val selectedMode = currentMode
+        val selectedModes = selected.associate { it.optString("id") to it.optString("engine", "codex") }
         showConfirmDialog("批量删除聊天", "删除选中的 ${ids.size} 个聊天？此操作无法撤销。", "删除", destructive = true) {
             val generation = connectionGeneration
             val api = RemoteApi(endpoint, token)
@@ -2566,8 +2724,9 @@ class MainActivity : Activity() {
                         syncRevisions.remove(id)
                         displayedThreadTitles.remove(threadTitleKey(id))
                         pausedThreadKeys.remove(threadTitleKey(id))
-                        draftFilesByScope.remove(connectionScopedKey("draft_${selectedMode}_$id"))
-                        pendingUserMessages.remove(connectionScopedKey("draft_${selectedMode}_$id"))
+                        val engine = selectedModes[id] ?: "codex"
+                        draftFilesByScope.remove(connectionScopedKey("draft_${engine}_$id"))
+                        pendingUserMessages.remove(connectionScopedKey("draft_${engine}_$id"))
                     }
                     if (activeThreadId?.let { it in removed } == true) {
                         prefs.edit().remove(activeThreadStorageKey(currentMode)).apply()
@@ -2609,12 +2768,21 @@ class MainActivity : Activity() {
         sidebarRenderDirty = false
         drawerThreads.removeAllViews()
         val query = if (::drawerSearch.isInitialized) drawerSearch.text.toString().trim().lowercase(Locale.ROOT) else ""
+        val heading = when {
+            query.isNotBlank() -> "搜索结果"
+            sidebarEngineFilter == "codex" -> "Codex 对话"
+            sidebarEngineFilter == "claude-code" -> "Claude 对话"
+            else -> "聊天记录"
+        }
+        drawer.findViewWithTag<TextView>("sidebar_thread_heading")?.text = tr(heading)
         val filtered = mutableListOf<JSONObject>()
         for (index in 0 until threads.length()) {
             val thread = threads.optJSONObject(index) ?: continue
-            if (thread.optString("engine", "codex") != currentMode) continue
+            val engine = thread.optString("engine", "codex")
+            if (sidebarEngineFilter != null && engine != sidebarEngineFilter) continue
             val title = threadTitle(thread)
-            if (query.isNotBlank() && !title.lowercase(Locale.ROOT).contains(query)) continue
+            val preview = thread.optString("preview").lowercase(Locale.ROOT)
+            if (query.isNotBlank() && !title.lowercase(Locale.ROOT).contains(query) && !preview.contains(query)) continue
             filtered += thread
         }
         filtered.sortWith(compareByDescending<JSONObject> { pinnedThreadIds.contains(it.optString("id")) }
@@ -2629,11 +2797,17 @@ class MainActivity : Activity() {
                 setPadding(dp(12), dp(28), dp(12), dp(28))
             }
             empty.addView(ImageView(this).apply {
-                setImageResource(if (currentMode == "claude-code") R.drawable.ic_brand_claude else R.drawable.ic_brand_codex)
-                setColorFilter(if (currentMode == "claude-code") CLAUDE_MODE_ACCENT else codexBrandAccent())
+                val emptyEngine = sidebarEngineFilter ?: currentMode
+                setImageResource(if (emptyEngine == "claude-code") R.drawable.ic_brand_claude else R.drawable.ic_brand_codex)
+                setColorFilter(brandIconTint(emptyEngine))
                 alpha = .55f
             }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { bottomMargin = dp(9) })
-            empty.addView(label(if (query.isBlank()) "当前模式暂无对话" else "没有匹配的对话", 12, MUTED).apply { gravity = Gravity.CENTER }, widthWrap())
+            val emptyLabel = when {
+                query.isNotBlank() -> "没有匹配的对话"
+                sidebarEngineFilter != null -> "该模式暂无对话"
+                else -> "暂无对话"
+            }
+            empty.addView(label(emptyLabel, 12, MUTED).apply { gravity = Gravity.CENTER }, widthWrap())
             drawerThreads.addView(empty, widthWrap())
         }
         val sections = linkedMapOf<String, MutableList<JSONObject>>()
@@ -2646,24 +2820,24 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(MATCH, WRAP))
             entries.forEach { thread ->
             val id = thread.optString("id")
+            val engine = thread.optString("engine", "codex")
             val selected = if (sidebarSelectionMode) id in selectedSidebarThreadIds else id == activeThreadId
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(if (pixelTheme) dp(8) else if (retroTheme) 0 else dp(9), if (retroTheme) dp(2) else dp(8), dp(5), if (retroTheme) dp(2) else dp(8))
                 minimumHeight = dp(if (pixelTheme) 48 else if (retroTheme) 44 else 0)
-                val selectedAccent = if (currentMode == "claude-code") CLAUDE_MODE_ACCENT else ACCENT
+                val selectedAccent = if (engine == "claude-code") CLAUDE_MODE_ACCENT else ACCENT
                 background = if (retroTheme) {
                     if (pixelTheme && selected) pixelFrameBackground(R.drawable.pixel_frame_active, Color.rgb(25, 43, 64))
-                    else if (selected) ColorDrawable(if (currentMode == "claude-code") Color.rgb(70, 45, 37) else LOLLIPOP_PRIMARY_LIGHT) else lollipopRipple()
+                    else if (selected) ColorDrawable(if (engine == "claude-code") Color.rgb(70, 45, 37) else LOLLIPOP_PRIMARY_LIGHT) else lollipopRipple()
                 } else if (selected) rounded(PANEL_INSET, dp(9), colorWithAlpha(selectedAccent, if (lightTheme) .52f else .42f), dp(1)) else rounded(Color.TRANSPARENT, dp(9))
                 isClickable = true
                 isFocusable = true
                 contentDescription = threadTitle(thread)
             }
-            val engine = thread.optString("engine", "codex")
             if (retroTheme && !pixelTheme) {
-                val selectedAccent = if (currentMode == "claude-code") CLAUDE_MODE_ACCENT else codexBrandAccent()
+                val selectedAccent = if (engine == "claude-code") brandIconTint(engine) else codexBrandAccent()
                 row.addView(View(this).apply {
                     setBackgroundColor(if (selected) selectedAccent else Color.TRANSPARENT)
                 }, LinearLayout.LayoutParams(dp(3), MATCH).apply { rightMargin = dp(8) })
@@ -3041,6 +3215,7 @@ class MainActivity : Activity() {
 
     private fun refreshThreads(showErrors: Boolean) {
         if (token.isBlank()) return
+        lastThreadListRefreshAt = android.os.SystemClock.uptimeMillis()
         val generation = connectionGeneration
         val api = RemoteApi(endpoint, token)
         io.execute {
@@ -3066,8 +3241,16 @@ class MainActivity : Activity() {
                             current.put("name", latest.optString("name"))
                             current.put("preview", latest.optString("preview"))
                             current.put("cwd", latest.optString("cwd"))
-                            latest.optJSONObject("status")?.let { current.put("status", it) }
-                            running = isThreadRunning(current)
+                            // Sidebar metadata must not replace the lifecycle of loaded history.
+                            if (current.optJSONArray("turns") == null) {
+                                latest.optJSONObject("status")?.let { current.put("status", it) }
+                            }
+                            val latestRevision = latest.optString("historyRevision")
+                            if ((latestRevision.isNotBlank() && latestRevision != current.optString("historyRevision")) ||
+                                (latestRevision.isBlank() && latest.opt("updatedAt") != current.opt("updatedAt"))) {
+                                clearKnownEmptyThread(selected)
+                                scheduleActiveThreadRefresh()
+                            }
                             renderHeader()
                         }
                     } else if (showErrors && result.length() > 0) {
@@ -3088,6 +3271,19 @@ class MainActivity : Activity() {
     private fun findThread(id: String): JSONObject? = (0 until threads.length())
         .mapNotNull { threads.optJSONObject(it) }
         .firstOrNull { it.optString("id") == id }
+
+    private fun scheduleThreadListRefresh() {
+        if (!foreground) { backgroundListDirty = true; return }
+        if (threadListRefreshScheduled) return
+        val generation = connectionGeneration
+        threadListRefreshScheduled = true
+        val elapsed = android.os.SystemClock.uptimeMillis() - lastThreadListRefreshAt
+        handler.postDelayed({
+            threadListRefreshScheduled = false
+            if (generation == connectionGeneration && foreground) refreshThreads(false)
+            else backgroundListDirty = true
+        }, (5_000L - elapsed).coerceAtLeast(500L))
+    }
 
     private fun selectThread(thread: JSONObject, eagerDiskCache: Boolean = false) {
         if (queueEditPending || queueEditItem != null) { showStatus("请先保存或取消排队消息编辑"); return }
@@ -3326,6 +3522,8 @@ class MainActivity : Activity() {
         if (isKnownEmptyThread(threadId) && (activeThread?.optJSONArray("turns")?.length() ?: 0) == 0) return
         val connection = connectionGeneration
         val profileId = activeConnectionId
+        val lifecycleGeneration = turnLifecycleGeneration
+        val previousHistory = activeThread
         val api = RemoteApi(endpoint, token)
         if (showLoading && (activeThread?.optJSONArray("turns")?.length() ?: 0) == 0) {
             historyLoadingThreadId = threadId
@@ -3356,7 +3554,7 @@ class MainActivity : Activity() {
                     val changedTurns = response.optJSONArray("turns") ?: JSONArray()
                     (0 until changedTurns.length()).mapNotNull { changedTurns.optJSONObject(it)?.optString("id")?.takeIf(String::isNotBlank) }
                 } else emptyList()
-                val merged = if (revision != null) mergeHistory(threadId, activeThread, response, revision) else response
+                val merged = if (revision != null) mergeHistory(threadId, previousHistory, response, revision) else response
                 val responseIsCompleteWindow = revision != null && response.has("turns") &&
                     response.optJSONObject("historySync")?.optString("baseRevision").orEmpty().isBlank()
                 if (merged == null && !responseIsCompleteWindow) {
@@ -3377,20 +3575,26 @@ class MainActivity : Activity() {
                 val newRevision = sync?.optString("revision")?.takeIf { !it.isNullOrBlank() && it != "null" }
                 if (resolved.optString("id") != threadId) throw IOException("服务器返回了不匹配的聊天记录。")
                 if (connection != connectionGeneration) return@execute
-                writeThreadHistoryCache(threadId, resolved, newRevision, profileId)
                 handler.post {
                     if (connection != connectionGeneration) return@post
                     finishThreadRead(threadId)
                     if (activeThreadId != threadId) return@post
+                    if (lifecycleGeneration != turnLifecycleGeneration || !reconcileLiveHistory(resolved)) {
+                        scheduleActiveThreadRefresh()
+                        return@post
+                    }
                     if (newRevision != null) syncRevisions[threadId] = newRevision
                     activeThread = resolved
                     historyMemoryCache[threadId] = resolved
+                    val wasLoadingHistory = historyLoadingThreadId == threadId
                     historyLoadingThreadId = null
                     historyLoadError = null
                     running = isThreadRunning(resolved)
+                    if (!running) clearLiveActivity()
                     renderHeader()
-                    if (historyChanged) renderMessages(false, incrementalTurnId)
+                    if (historyChanged || wasLoadingHistory) renderMessages(false, if (wasLoadingHistory) null else incrementalTurnId)
                     updateComposerFileChanges()
+                    io.execute { writeThreadHistoryCache(threadId, resolved, newRevision, profileId) }
                 }
             } catch (error: Exception) {
                 handler.post {
@@ -3412,6 +3616,7 @@ class MainActivity : Activity() {
     }
 
     private fun scheduleActiveThreadRefresh() {
+        if (!foreground) { backgroundThreadDirty = true; return }
         if (activeThreadRefreshScheduled) return
         val elapsed = android.os.SystemClock.uptimeMillis() - lastActiveThreadRefreshAt
         val delay = (900L - elapsed).coerceAtLeast(0L)
@@ -3675,6 +3880,7 @@ class MainActivity : Activity() {
                 timelineTextBuilders[block]?.let { block.put("text", it.toString()) }
             }
         }
+        appendRemoteUserMessageOverlays(messages)
         appendPendingUserMessages(messages)
         val hasConversationMessages = messages.any { it.first == "user" || it.first == "assistant" }
         val showWelcomeTitle = effectiveIncrementalTurnId == null && !hasConversationMessages && (
@@ -3802,9 +4008,20 @@ class MainActivity : Activity() {
                         LinearLayout.LayoutParams(WRAP, WRAP),
                     )
                 }
+                item.optLong("_duration", 0L).takeIf { it > 0L }?.let { durationMs ->
+                    meta.addView(
+                        label("${tr("用时")} ${formatTurnDuration(durationMs)}", 10, MUTED).apply {
+                            setPadding(dp(7), 0, 0, 0)
+                        },
+                        LinearLayout.LayoutParams(WRAP, WRAP),
+                    )
+                }
                 bubble.addView(meta, LinearLayout.LayoutParams((maxBubbleWidth - dp(6)).coerceAtLeast(dp(120)), WRAP))
             }
-            val text = messageText(item, role)
+            val rawText = messageText(item, role)
+            val parsedUserText = if (role == "user") parseUserMessageText(rawText) else null
+            val text = parsedUserText?.visibleText ?: rawText
+            val documentAttachments = parsedUserText?.documentAttachments.orEmpty()
             val hasImage = item.optJSONArray("content")?.let { parts ->
                 (0 until parts.length()).any { index ->
                     normalizedType(parts.optJSONObject(index)?.optString("type").orEmpty()) in setOf("image", "localimage")
@@ -3812,12 +4029,18 @@ class MainActivity : Activity() {
             } == true
             if (role == "assistant" && item.optJSONArray("_activityTimeline") != null) {
                 addAssistantTimeline(bubble, item, (maxBubbleWidth - dp(6)).coerceAtLeast(dp(120)))
-            } else if (text.isNotBlank() || !hasImage) {
+            } else if (text.isNotBlank() || documentAttachments.isNotEmpty() || !hasImage) {
                 if (role == "assistant") {
                     addAssistantMarkdown(bubble, text, (maxBubbleWidth - dp(6)).coerceAtLeast(dp(120)))
                 } else {
+                    addTextDocumentAttachmentCards(bubble, documentAttachments, maxBubbleWidth)
                     val contentColor = if (currentMode == "claude-code") CLAUDE_USER_MESSAGE_FOREGROUND else CODEX_USER_MESSAGE_TEXT
-                    val content = label(text.ifBlank { tr("（附件消息）") }, 14, contentColor, translateUi = false).apply {
+                    val visibleContent = when {
+                        text.isNotBlank() -> text
+                        documentAttachments.isNotEmpty() || hasImage -> ""
+                        else -> tr("（附件消息）")
+                    }
+                    val content = label(visibleContent, 14, contentColor, translateUi = false).apply {
                         setTextIsSelectable(true)
                         setLineSpacing(dp(3).toFloat(), 1.3f)
                         typeface = themedTypeface()
@@ -3826,12 +4049,14 @@ class MainActivity : Activity() {
                         hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
                         maxWidth = (maxBubbleWidth - dp(22)).coerceAtLeast(dp(120))
                     }
-                    Linkify.addLinks(content, Linkify.WEB_URLS)
-                    content.setLinkTextColor(ACCENT)
-                    enableChatLinkClicks(content)
-                    val maxTextWidth = (maxBubbleWidth - bubble.paddingLeft - bubble.paddingRight).coerceAtLeast(dp(80))
-                    val contentWidth = naturalTextBlockWidth(content, text.ifBlank { "（附件消息）" }, maxTextWidth)
-                    bubble.addView(content, LinearLayout.LayoutParams(contentWidth, WRAP))
+                    if (visibleContent.isNotBlank()) {
+                        Linkify.addLinks(content, Linkify.WEB_URLS)
+                        content.setLinkTextColor(ACCENT)
+                        enableChatLinkClicks(content)
+                        val maxTextWidth = (maxBubbleWidth - bubble.paddingLeft - bubble.paddingRight).coerceAtLeast(dp(80))
+                        val contentWidth = naturalTextBlockWidth(content, visibleContent, maxTextWidth)
+                        bubble.addView(content, LinearLayout.LayoutParams(contentWidth, WRAP))
+                    }
                 }
             }
             addMessageImages(bubble, item, maxBubbleWidth)
@@ -3853,7 +4078,7 @@ class MainActivity : Activity() {
                         setPadding(0, dp(3), dp(2), 0)
                     }, LinearLayout.LayoutParams(WRAP, WRAP))
                 }
-                messageCopyAction(text)?.let { action ->
+                messageCopyAction(rawText)?.let { action ->
                     messageColumn.addView(action, LinearLayout.LayoutParams(WRAP, dp(30)).apply { topMargin = dp(2) })
                 }
                 row.addView(messageColumn, LinearLayout.LayoutParams(WRAP, WRAP))
@@ -3885,7 +4110,8 @@ class MainActivity : Activity() {
         if (approval != null) renderApproval(approval)
         activityShimmerAnimator?.cancel()
         activityShimmerAnimator = null
-        if (running && !(messages.isEmpty() && !historyLoadError.isNullOrBlank())) {
+        val loadingActiveHistory = activeThreadId != null && historyLoadingThreadId == activeThreadId
+        if (running && !loadingActiveHistory && !(messages.isEmpty() && !historyLoadError.isNullOrBlank())) {
             val activityColor = if (lightTheme) Color.rgb(80, 80, 80) else Color.rgb(180, 180, 180)
             val activity = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -3900,8 +4126,15 @@ class MainActivity : Activity() {
                 contentDescription = "正在思考"
             }, LinearLayout.LayoutParams(dp(16), dp(16)).apply { rightMargin = dp(7) })
             val lastTurn = turns.optJSONObject(turns.length() - 1)
-            activeActivityStartedAt = parseMessageInstant(firstJsonValue(lastTurn ?: JSONObject(), "startedAt", "started_at", "createdAt"))?.toEpochMilli()
-                ?: System.currentTimeMillis()
+            val timerTurnId = "${activeThreadId.orEmpty()}:${lastTurn?.optString("id").orEmpty()}"
+            if (activeActivityTimerTurnId != timerTurnId) {
+                val nowWall = System.currentTimeMillis()
+                val startedAtWall = parseMessageInstant(firstJsonValue(lastTurn ?: JSONObject(), "startedAt", "started_at", "createdAt"))?.toEpochMilli()
+                    ?: nowWall
+                val elapsedBeforeRender = (nowWall - startedAtWall).coerceAtLeast(0L)
+                activeActivityStartedAt = SystemClock.elapsedRealtime() - elapsedBeforeRender
+                activeActivityTimerTurnId = timerTurnId
+            }
             val lastItems = lastTurn?.optJSONArray("items") ?: JSONArray()
             val turnId = lastTurn?.optString("id").orEmpty()
             val activityText = activityLineText(turnId, lastItems)
@@ -3910,7 +4143,7 @@ class MainActivity : Activity() {
                 ellipsize = android.text.TextUtils.TruncateAt.END
             }
             activity.addView(activeActivityText, LinearLayout.LayoutParams(0, WRAP, 1f))
-            activeActivityTimer = label("已用 0分0秒", 10, activityColor).apply {
+            activeActivityTimer = label("${tr("已用")} ${formatTurnDuration(0L)}", 10, activityColor, translateUi = false).apply {
                 setPadding(dp(8), 0, 0, 0)
                 contentDescription = "本轮思考时间"
             }
@@ -3923,6 +4156,8 @@ class MainActivity : Activity() {
             handler.removeCallbacks(activityTick)
             activeActivityText = null
             activeActivityTimer = null
+            activeActivityStartedAt = 0L
+            activeActivityTimerTurnId = null
         }
         messageScroll.post {
             if (scrollToEnd || wasNearEnd) messageScroll.scrollTo(0, messageList.height)
@@ -3986,7 +4221,8 @@ class MainActivity : Activity() {
             }
         }
         val content = JSONArray()
-        payload.optString("text").takeIf { it.isNotBlank() }?.let { content.put(JSONObject().put("type", "text").put("text", it)) }
+        payload.optString("requestText").ifBlank { payload.optString("text") }
+            .takeIf { it.isNotBlank() }?.let { content.put(JSONObject().put("type", "text").put("text", it)) }
         files.filter { it.optString("kind") == "image" }.forEach { file ->
             content.put(JSONObject().put("type", "localImage")
                 .put("data", file.optString("thumbnail").ifBlank { file.optString("data") })
@@ -4023,7 +4259,10 @@ class MainActivity : Activity() {
             setPadding(dp(11), dp(7), dp(11), dp(7))
             background = rounded(if (currentMode == "claude-code") CLAUDE_USER_MESSAGE_SURFACE else CODEX_USER_MESSAGE_FILL, dp(if (retroTheme) 5 else 12))
         }
-        val text = messageText(item, "user")
+        val rawText = messageText(item, "user")
+        val parsedText = parseUserMessageText(rawText)
+        val text = parsedText.visibleText
+        addTextDocumentAttachmentCards(bubble, parsedText.documentAttachments, maxBubbleWidth)
         if (text.isNotBlank()) {
             val content = label(text, 14, if (currentMode == "claude-code") CLAUDE_USER_MESSAGE_TEXT else CODEX_USER_MESSAGE_TEXT, translateUi = false).apply {
                 setTextIsSelectable(true)
@@ -4074,6 +4313,70 @@ class MainActivity : Activity() {
         }
         if (remaining.isEmpty()) pendingUserMessages.remove(scope) else pendingUserMessages[scope] = remaining.toMutableList()
         remaining.forEach { messages += "user" to it }
+    }
+
+    private fun rememberRemoteUserMessage(threadId: String, turnId: String?, item: JSONObject): Boolean {
+        if (threadId != activeThreadId || normalizedType(item.optString("type")) != "usermessage") return false
+        val itemId = item.optString("id").takeIf { it.isNotBlank() && it != "null" } ?: return false
+        val text = messageText(item, "user").trim()
+        val imageCount = item.optJSONArray("content")?.let { content ->
+            (0 until content.length()).count { index ->
+                normalizedType(content.optJSONObject(index)?.optString("type").orEmpty()) in setOf("image", "localimage")
+            }
+        } ?: 0
+        if (text.isBlank() && imageCount == 0) return false
+
+        val existingTurns = activeThread?.optJSONArray("turns")
+        if (existingTurns != null && (0 until existingTurns.length()).any { turnIndex ->
+                val items = existingTurns.optJSONObject(turnIndex)?.optJSONArray("items") ?: return@any false
+                (0 until items.length()).any { items.optJSONObject(it)?.optString("id") == itemId }
+            }) {
+            remoteUserMessageOverlays[threadId]?.remove(itemId)
+            return false
+        }
+
+        val pending = pendingUserMessages[draftStorageKey()].orEmpty()
+        val alreadyShownLocally = pending.any { local ->
+            val expectedText = local.optString("_matchText").trim()
+            (expectedText.isNotBlank() && expectedText == text) ||
+                (expectedText.isBlank() && local.optInt("_imageCount") > 0 && imageCount >= local.optInt("_imageCount"))
+        }
+        if (alreadyShownLocally) return false
+
+        val resolvedTurnId = turnId?.takeIf { it.isNotBlank() && it != "null" }
+            ?: liveActivityTurnId?.takeIf { it.isNotBlank() }
+        val overlay = shallowCopyObject(item).put("_displayTime", messageTime(item, JSONObject(), false).ifBlank { currentMessageTime() })
+        resolvedTurnId?.let { overlay.put("_turnId", it) }
+        val overlays = remoteUserMessageOverlays.getOrPut(threadId) { linkedMapOf() }
+        overlays[itemId] = overlay
+        while (overlays.size > 16) overlays.remove(overlays.keys.first())
+        return true
+    }
+
+    private fun appendRemoteUserMessageOverlays(messages: MutableList<Pair<String, JSONObject>>) {
+        val threadId = activeThreadId ?: return
+        val overlays = remoteUserMessageOverlays[threadId] ?: return
+        val iterator = overlays.entries.iterator()
+        while (iterator.hasNext()) {
+            val (itemId, item) = iterator.next()
+            val turns = activeThread?.optJSONArray("turns") ?: JSONArray()
+            val confirmed = (0 until turns.length()).any { index ->
+                val items = turns.optJSONObject(index)?.optJSONArray("items") ?: return@any false
+                (0 until items.length()).any { items.optJSONObject(it)?.optString("id") == itemId }
+            }
+            if (confirmed || messages.any { (role, message) -> role == "user" && message.optString("id") == itemId }) {
+                iterator.remove()
+                continue
+            }
+            val turnId = item.optString("_turnId")
+            val sameTurnIndex = if (turnId.isBlank()) -1 else messages.indexOfFirst { (role, message) ->
+                role == "assistant" && message.optString("_turnId") == turnId
+            }
+            val renderedItem = shallowCopyObject(item)
+            if (sameTurnIndex >= 0) messages.add(sameTurnIndex, "user" to renderedItem)
+            else messages += "user" to renderedItem
+        }
+        if (overlays.isEmpty()) remoteUserMessageOverlays.remove(threadId)
     }
 
     private fun removePendingUserMessage(scope: String, requestId: String) {
@@ -5214,9 +5517,16 @@ class MainActivity : Activity() {
         maximumWidth: Int,
         refreshDetails: () -> Unit,
     ): LinearLayout {
-        val showAll = logId in fullyExpandedOperationIds
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(5), 0, 0, dp(3)) }
-        val visibleOperations = if (showAll) operations else operations.take(8)
+        val firstPageCount = 8
+        val pageSize = OPERATION_LOG_PAGE_SIZE
+        val pageCount = if (operations.size <= firstPageCount) 1 else
+            1 + (operations.size - firstPageCount + pageSize - 1) / pageSize
+        val pageIndex = operationPageIndexes.getOrPut(logId) { 0 }.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        operationPageIndexes[logId] = pageIndex
+        val startIndex = if (pageIndex == 0) 0 else firstPageCount + (pageIndex - 1) * pageSize
+        val endIndex = minOf(operations.size, startIndex + if (pageIndex == 0) firstPageCount else pageSize)
+        val visibleOperations = operations.subList(startIndex.coerceAtMost(endIndex), endIndex)
         visibleOperations.forEach { operation ->
             val isFileChange = normalizedType(operation.optString("type")) == "filechange"
             val changedFiles = if (isFileChange) parseFileChanges(operation.opt("changes")) else emptyList()
@@ -5280,14 +5590,34 @@ class MainActivity : Activity() {
                 })
             }
         }
-        if (!showAll && operations.size > visibleOperations.size) {
-            list.addView(label("查看其余 ${operations.size - visibleOperations.size} 项", 11, ACCENT, true).apply {
-                setPadding(dp(21), dp(4), 0, dp(4))
-                setOnClickListener {
-                    fullyExpandedOperationIds.add(logId)
-                    refreshDetails()
-                }
-            }, widthWrap())
+        if (pageCount > 1) {
+            val pager = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(20), dp(5), dp(4), dp(4))
+            }
+            if (pageIndex > 0) {
+                pager.addView(label("上一批", 11, ACCENT, true).apply {
+                    setPadding(dp(5), dp(4), dp(8), dp(4))
+                    setOnClickListener {
+                        operationPageIndexes[logId] = pageIndex - 1
+                        refreshDetails()
+                    }
+                }, LinearLayout.LayoutParams(WRAP, WRAP))
+            }
+            pager.addView(label("${startIndex + 1}–$endIndex / ${operations.size}", 10, MUTED).apply {
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(0, WRAP, 1f))
+            if (pageIndex < pageCount - 1) {
+                pager.addView(label("下一批", 11, ACCENT, true).apply {
+                    setPadding(dp(8), dp(4), dp(5), dp(4))
+                    setOnClickListener {
+                        operationPageIndexes[logId] = pageIndex + 1
+                        refreshDetails()
+                    }
+                }, LinearLayout.LayoutParams(WRAP, WRAP))
+            }
+            list.addView(pager, LinearLayout.LayoutParams(maximumWidth - dp(7), WRAP))
         }
         return list
     }
@@ -5371,6 +5701,139 @@ class MainActivity : Activity() {
         return output.toList()
     }
 
+    private fun parseUserMessageText(rawText: String): ParsedUserMessageText {
+        val attachments = mutableListOf<TextDocumentAttachmentPreview>()
+        val visibleText = USER_DOCUMENT_ATTACHMENT_PATTERN.replace(rawText) { match ->
+            attachments += TextDocumentAttachmentPreview(
+                name = match.groupValues[1].trim(),
+                content = match.groupValues[2],
+                characterCount = match.groupValues[2].length,
+            )
+            ""
+        }.replace(USER_MESSAGE_EXTRA_NEWLINES_PATTERN, "\n\n").trim()
+        return ParsedUserMessageText(visibleText, attachments)
+    }
+
+    private fun addTextDocumentAttachmentCards(
+        container: LinearLayout,
+        attachments: List<TextDocumentAttachmentPreview>,
+        maximumBubbleWidth: Int,
+    ) {
+        if (attachments.isEmpty()) return
+        val maximumCardWidth = (maximumBubbleWidth - container.paddingLeft - container.paddingRight).coerceAtLeast(dp(120))
+        attachments.forEach { attachment ->
+            val horizontalPadding = dp(if (pixelTheme) 8 else 10)
+            val iconSize = dp(23)
+            val iconGap = dp(8)
+            val infoMaxWidth = (maximumCardWidth - horizontalPadding * 2 - iconSize - iconGap).coerceAtLeast(dp(64))
+            val characterLabel = "${java.text.NumberFormat.getIntegerInstance(Locale.CHINA).format(attachment.characterCount)} 个字符"
+            val title = label(attachment.name, 12, TEXT, bold = true, translateUi = false).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                maxWidth = infoMaxWidth
+            }
+            val detail = label(characterLabel, 10, MUTED, translateUi = false).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                maxWidth = infoMaxWidth
+            }
+            val desiredInfoWidth = max(title.paint.measureText(attachment.name).toInt(), detail.paint.measureText(characterLabel).toInt())
+                .coerceAtMost(infoMaxWidth)
+            val cardWidth = (horizontalPadding * 2 + iconSize + iconGap + desiredInfoWidth).coerceAtMost(maximumCardWidth)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(horizontalPadding, dp(7), horizontalPadding, dp(7))
+                isClickable = true
+                isFocusable = true
+                contentDescription = "打开文档 ${attachment.name}"
+                foreground = lollipopRipple()
+                setOnClickListener { showTextDocumentPreview(attachment) }
+                background = if (pixelTheme) pixelFrameBackground(R.drawable.pixel_frame_square, PANEL_INSET)
+                    else rounded(PANEL_INSET, dp(if (retroTheme) 4 else 8), BORDER, dp(1))
+            }
+            card.addView(ImageView(this).apply {
+                setPixelAwareImageResource(fileDisplayIconResource(attachment.name))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                if (!retroTheme) imageTintList = null
+            }, LinearLayout.LayoutParams(iconSize, iconSize).apply { rightMargin = iconGap })
+            card.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(title, LinearLayout.LayoutParams(desiredInfoWidth, WRAP))
+                addView(detail, LinearLayout.LayoutParams(desiredInfoWidth, WRAP).apply { topMargin = dp(1) })
+            }, LinearLayout.LayoutParams(desiredInfoWidth, WRAP))
+            container.addView(card, LinearLayout.LayoutParams(cardWidth, WRAP).apply {
+                topMargin = dp(5)
+            })
+        }
+    }
+
+    private fun showTextDocumentPreview(attachment: TextDocumentAttachmentPreview) {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(if (retroTheme) 0 else dp(12), if (retroTheme) 0 else dp(9), if (retroTheme) 0 else dp(12), dp(8))
+            background = rounded(OPAQUE_PANEL, dp(14), BORDER, dp(1))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            if (retroTheme) {
+                setPadding(dp(12), 0, dp(4), 0)
+                background = lollipopActionBarBackground()
+            }
+        }
+        header.addView(ImageView(this).apply {
+            setPixelAwareImageResource(fileDisplayIconResource(attachment.name))
+            contentDescription = fileGlyph(attachment.name)
+        }, LinearLayout.LayoutParams(dp(22), dp(22)).apply { rightMargin = dp(8) })
+        header.addView(label(attachment.name, if (retroTheme) 17 else 14, if (retroTheme) ANDROID1_TITLE_TEXT else TEXT, true, translateUi = false).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+        }, LinearLayout.LayoutParams(0, dp(42), 1f))
+        header.addView(iconButton("close", "关闭文档预览") { dialog.dismiss() }.apply {
+            if (retroTheme) {
+                imageTintList = null
+                background = android1SegmentButtonBackground()
+            }
+        }, LinearLayout.LayoutParams(dp(if (retroTheme) 48 else 32), dp(if (retroTheme) 48 else 32)))
+        layout.addView(header, LinearLayout.LayoutParams(MATCH, if (retroTheme) dp(48) else WRAP))
+        layout.addView(label("${java.text.NumberFormat.getIntegerInstance(Locale.CHINA).format(attachment.characterCount)} 个字符", 10, MUTED, translateUi = false).apply {
+            setPadding(dp(4), dp(2), dp(4), dp(5))
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        val markdownContent = label("", 14, TEXT, translateUi = false).apply {
+            setTextIsSelectable(true)
+            setLineSpacing(dp(3).toFloat(), 1.3f)
+            typeface = themedTypeface()
+            setHorizontallyScrolling(false)
+            breakStrategy = android.text.Layout.BREAK_STRATEGY_SIMPLE
+            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+            setPadding(dp(5), dp(7), dp(5), dp(12))
+        }
+        if (attachment.content.isBlank()) {
+            markdownContent.text = tr("此文档没有可预览的文本")
+        } else {
+            assistantMarkdown.setMarkdown(markdownContent, displayLocalInstallerPaths(attachment.content))
+            enableChatLinkClicks(markdownContent)
+        }
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(markdownContent, FrameLayout.LayoutParams(MATCH, WRAP))
+        }
+        layout.addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(3) })
+        dialog.setContentView(layout)
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(MATCH, (resources.displayMetrics.heightPixels * .88f).toInt())
+            setGravity(Gravity.BOTTOM)
+        }
+    }
+
     private fun addMessageImages(container: LinearLayout, item: JSONObject, maxBubbleWidth: Int) {
         val content = item.optJSONArray("content") ?: return
         val imageWidth = (maxBubbleWidth - container.paddingLeft - container.paddingRight).coerceAtLeast(dp(120))
@@ -5397,13 +5860,17 @@ class MainActivity : Activity() {
                 val cacheKey = "${item.optString("id")}:$index:${data.length}:${data.take(48).hashCode()}"
                 val bitmap = messageImageCache.get(cacheKey) ?: run {
                     val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
-                    decodeSampledBitmap(bytes, 720)?.also { messageImageCache.put(cacheKey, it) }
+                    decodeSampledBitmap(bytes, MESSAGE_IMAGE_THUMBNAIL_MAX_DIMENSION)?.also { messageImageCache.put(cacheKey, it) }
                 } ?: continue
                 val image = ImageView(this).apply {
                     setImageBitmap(bitmap)
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     background = rounded(USER_BUBBLE, dp(8))
-                    setOnClickListener { showImageDialog(bitmap) }
+                    setOnClickListener {
+                        showImageDialogWhileLoading(bitmap) {
+                            decodeBase64Image(data, fullImagePreviewMaximumDimension())
+                        }
+                    }
                 }
                 container.addView(image, LinearLayout.LayoutParams(imageWidth, dp(190)).apply { topMargin = dp(5) })
             } catch (_: IllegalArgumentException) { }
@@ -5436,7 +5903,16 @@ class MainActivity : Activity() {
             image.setImageBitmap(bitmap)
             image.visibility = View.VISIBLE
             progress.visibility = View.GONE
-            image.setOnClickListener { showImageDialog(bitmap) }
+            image.setOnClickListener {
+                showImageDialogWhileLoading(bitmap) {
+                    val query = buildString {
+                        append("?path=${Uri.encode(requestPath)}")
+                        if (!cwd.isNullOrBlank()) append("&cwd=${Uri.encode(cwd)}")
+                    }
+                    val response = RemoteApi(endpoint, token).get("/api/v1/codex/workspace/image$query")
+                    decodeBase64Image(response.optString("data"), fullImagePreviewMaximumDimension())
+                }
+            }
         }
 
         messageImageCache.get(cacheKey)?.let {
@@ -5457,7 +5933,7 @@ class MainActivity : Activity() {
                     val response = RemoteApi(endpoint, token).get("/api/v1/codex/workspace/image$query")
                     val encoded = response.optString("data")
                     if (encoded.isBlank() || encoded.length > MAX_FILE_PREVIEW_BASE64_CHARS) throw IOException("图片过大")
-                    val bitmap = decodeSampledBitmap(android.util.Base64.decode(encoded, android.util.Base64.DEFAULT), 720)
+                    val bitmap = decodeSampledBitmap(android.util.Base64.decode(encoded, android.util.Base64.DEFAULT), MESSAGE_IMAGE_THUMBNAIL_MAX_DIMENSION)
                         ?: throw IOException("图片内容无法解析")
                     messageImageCache.put(cacheKey, bitmap)
                     handler.post { if (holder.isAttachedToWindow) display(bitmap) }
@@ -5489,8 +5965,10 @@ class MainActivity : Activity() {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val sourceMaximumDimension = maxOf(bounds.outWidth, bounds.outHeight)
+        val targetFloor = (maximumDimension * 0.8f).toInt().coerceAtLeast(1)
         var sampleSize = 1
-        while (bounds.outWidth / sampleSize > maximumDimension || bounds.outHeight / sampleSize > maximumDimension) {
+        while (sampleSize <= 512 && sourceMaximumDimension / (sampleSize * 2) >= targetFloor) {
             sampleSize *= 2
         }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply {
@@ -5549,6 +6027,83 @@ class MainActivity : Activity() {
             setGravity(Gravity.CENTER)
         }
     }
+
+    private fun showImageDialogWhileLoading(placeholder: Bitmap?, loadBitmap: () -> Bitmap?) {
+        parkActivityInputFocus()
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val frame = FrameLayout(this).apply {
+            isFocusableInTouchMode = true
+            background = rounded(OPAQUE_PANEL, dp(14), BORDER, dp(1))
+        }
+        val image = ImageView(this).apply {
+            setImageBitmap(placeholder)
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        frame.addView(image, FrameLayout.LayoutParams(MATCH, MATCH))
+        val progress = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(TEXT)
+        }
+        frame.addView(progress, FrameLayout.LayoutParams(dp(34), dp(34), Gravity.CENTER))
+        frame.addView(iconButton("close", "关闭图片") { dialog.dismiss() }.apply {
+            background = rounded(PANEL_INSET, dp(18))
+        }, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(8)
+            rightMargin = dp(8)
+        })
+        dialog.setContentView(frame)
+        frame.requestFocus()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(MATCH, (resources.displayMetrics.heightPixels * .82f).toInt())
+            setGravity(Gravity.CENTER)
+        }
+
+        io.execute {
+            var loadedBitmap: Bitmap? = null
+            var failureMessage: String? = null
+            try {
+                loadedBitmap = loadBitmap()
+            } catch (error: Exception) {
+                failureMessage = "高清图片加载失败：${error.message ?: "图片无法解析"}"
+            } catch (_: OutOfMemoryError) {
+                messageImageCache.evictAll()
+                failureMessage = "图片分辨率过高，设备内存不足"
+            }
+            val result = loadedBitmap
+            val error = failureMessage
+            handler.post {
+                if (!dialog.isShowing) {
+                    if (result !== placeholder) result?.recycle()
+                    return@post
+                }
+                if (result != null) {
+                    image.setImageBitmap(result)
+                    progress.visibility = View.GONE
+                } else {
+                    progress.visibility = View.GONE
+                    if (error != null) showToast(error)
+                }
+            }
+        }
+    }
+
+    private fun decodeBase64Image(encodedData: String, maximumDimension: Int): Bitmap? {
+        val encoded = encodedData.substringAfter("base64,", encodedData)
+        if (encoded.isBlank() || encoded.length > MAX_FILE_PREVIEW_BASE64_CHARS) throw IOException("图片数据过大或为空")
+        val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+        return decodeSampledBitmap(bytes, maximumDimension) ?: throw IOException("图片内容无法解析")
+    }
+
+    private fun fullImagePreviewMaximumDimension(): Int =
+        maxOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+            .coerceAtLeast(MESSAGE_IMAGE_THUMBNAIL_MAX_DIMENSION)
+            .coerceAtMost(MAX_FULL_IMAGE_PREVIEW_DIMENSION)
 
     private data class FileChangeEntry(
         val path: String,
@@ -6044,7 +6599,11 @@ class MainActivity : Activity() {
         fun display(bitmap: Bitmap) {
             image.imageTintList = null
             image.setImageBitmap(bitmap)
-            image.setOnClickListener { showImageDialog(bitmap) }
+            image.setOnClickListener {
+                showImageDialogWhileLoading(bitmap) {
+                    decodeBase64Image(encoded, fullImagePreviewMaximumDimension())
+                }
+            }
         }
         messageImageCache.get(cacheKey)?.let { display(it); return image }
         io.execute {
@@ -6410,6 +6969,7 @@ class MainActivity : Activity() {
                     }
                     composerInput.hint = tr("编辑排队消息…")
                     queueEditBar.visibility = View.VISIBLE
+                    updateQueueEditImeSpacing()
                     renderAttachmentStrip()
                     updateComposerPreferences()
                     setSendBusy(false)
@@ -6462,6 +7022,7 @@ class MainActivity : Activity() {
                     queueEditThreadId = null
                     queueEditOwnerId = null
                     queueEditPreferences.clear()
+                    updateQueueEditImeSpacing()
                     composerInput.setText(queueEditDraft)
                     selectedFiles = queueEditDraftFiles
                     queueEditDraftFiles = mutableListOf()
@@ -6857,7 +7418,11 @@ class MainActivity : Activity() {
             }
             row.addView(ImageView(this).apply {
                 setPixelAwareImageResource(iconResource(action.icon))
-                imageTintList = retroIconTint(if (action.destructive) ERROR else SUBTLE)
+                imageTintList = when (action.icon) {
+                    "codex" -> ColorStateList.valueOf(brandIconTint("codex"))
+                    "claude" -> ColorStateList.valueOf(brandIconTint("claude-code"))
+                    else -> retroIconTint(if (action.destructive) ERROR else SUBTLE)
+                }
             }, LinearLayout.LayoutParams(dp(17), dp(17)).apply { rightMargin = dp(9) })
             row.addView(label(action.title, 12, if (action.destructive) ERROR else TEXT), LinearLayout.LayoutParams(0, WRAP, 1f))
             menu.addView(row, LinearLayout.LayoutParams(MATCH, dp(38)))
@@ -7079,20 +7644,14 @@ class MainActivity : Activity() {
         }
 
         if (themeName == "custom") {
-            appearance.addView(settingsActionRow("背景颜色", prefs.getString(KEY_CUSTOM_BACKGROUND, DEFAULT_CUSTOM_BACKGROUND).orEmpty()) {
+            appearance.addView(settingsThemeColorRow("背景颜色", "作为半透明面板背后的底色。", prefs.getString(KEY_CUSTOM_BACKGROUND, DEFAULT_CUSTOM_BACKGROUND).orEmpty(), DEFAULT_CUSTOM_BACKGROUND) {
                 showThemeColorDialog("背景颜色", KEY_CUSTOM_BACKGROUND, DEFAULT_CUSTOM_BACKGROUND)
-            }, widthWrap())
-            appearance.addView(settingsActionRow("字体颜色", prefs.getString(KEY_CUSTOM_TEXT, DEFAULT_CUSTOM_TEXT).orEmpty()) {
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(5) })
+            appearance.addView(settingsThemeColorRow("字体颜色", "应用于界面文字和控件。", prefs.getString(KEY_CUSTOM_TEXT, DEFAULT_CUSTOM_TEXT).orEmpty(), DEFAULT_CUSTOM_TEXT) {
                 showThemeColorDialog("字体颜色", KEY_CUSTOM_TEXT, DEFAULT_CUSTOM_TEXT)
-            }, widthWrap())
+            }, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(5) })
             val selectedImage = prefs.getString(KEY_CUSTOM_BACKGROUND_IMAGE, null)
-            appearance.addView(settingsActionRow("背景图片", if (selectedImage.isNullOrBlank()) "选择图片" else "更换或清除当前图片") {
-                chooseThemeBackground()
-            }, widthWrap())
-            if (!selectedImage.isNullOrBlank()) appearance.addView(settingsActionRow("清除背景图片", "保留自定义颜色") {
-                prefs.edit().remove(KEY_CUSTOM_BACKGROUND_IMAGE).apply()
-                rerenderAppKeepSettings()
-            }, widthWrap())
+            appearance.addView(settingsThemeImageRow(!selectedImage.isNullOrBlank()), LinearLayout.LayoutParams(MATCH, WRAP))
             val transparencyRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(2), dp(7), dp(2), 0) }
             val transparencyHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             transparencyHeader.addView(label("背景透明度", 12, SUBTLE), LinearLayout.LayoutParams(0, WRAP, 1f))
@@ -7255,11 +7814,11 @@ class MainActivity : Activity() {
             }
         }, widthWrap())
         val about = section("关于", "项目介绍、源代码与更新。")
-        about.addView(label("Code Agent Remote", 13, TEXT, true), widthWrap())
+        about.addView(label("Code Remote", 13, TEXT, true), widthWrap())
         about.addView(label("在手机上连接本机的代码助手，查看对话、文件和终端。", 11, MUTED).apply {
             setPadding(0, dp(4), 0, dp(5))
         }, widthWrap())
-        val projectUrl = "https://github.com/sevencnup/wotty-codex-remote"
+        val projectUrl = "https://github.com/sevencnup/code-remote"
         about.addView(settingsActionRow("GitHub 项目地址", projectUrl) {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(projectUrl)))
         }, widthWrap())
@@ -7289,9 +7848,9 @@ class MainActivity : Activity() {
             try {
                 val client = socketClient.newBuilder().callTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
                 val request = Request.Builder()
-                    .url("https://api.github.com/repos/sevencnup/wotty-codex-remote/releases?per_page=30")
+                    .url("https://api.github.com/repos/sevencnup/code-remote/releases?per_page=30")
                     .header("Accept", "application/vnd.github+json")
-                    .header("User-Agent", "CAR-Android/${BuildConfig.VERSION_NAME}")
+                    .header("User-Agent", "CodeRemote-Android/${BuildConfig.VERSION_NAME}")
                     .build()
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
@@ -7360,6 +7919,68 @@ class MainActivity : Activity() {
             setPixelAwareImageResource(iconResource("chevron_right"))
             imageTintList = retroIconTint(MUTED)
         }, LinearLayout.LayoutParams(dp(18), dp(18)).apply { leftMargin = dp(6) })
+    }
+
+    private fun settingsThemeColorRow(title: String, description: String, value: String, fallback: String, action: () -> Unit): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(58)
+        setPadding(dp(9), dp(7), dp(9), dp(7))
+        background = rounded(colorWithAlpha(OPAQUE_PANEL, .42f), dp(9), colorWithAlpha(BORDER, .65f), dp(1))
+        isClickable = true
+        isFocusable = true
+        contentDescription = "$title，当前 $value，点按选择颜色"
+        setOnClickListener { action() }
+        val copy = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+        copy.addView(label(title, 12, TEXT, true), widthWrap())
+        copy.addView(label(description, 10, MUTED), widthWrap())
+        addView(copy, LinearLayout.LayoutParams(0, WRAP, 1f))
+        val color = runCatching { Color.parseColor(value) }.getOrElse { Color.parseColor(fallback) }
+        addView(View(this@MainActivity).apply {
+            background = rounded(color, dp(6), BORDER, dp(1))
+            contentDescription = "$title 色块"
+        }, LinearLayout.LayoutParams(dp(32), dp(28)).apply { leftMargin = dp(8) })
+        addView(label(value.uppercase(Locale.ROOT), 10, TEXT).apply { typeface = Typeface.MONOSPACE }, LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(6) })
+    }
+
+    private fun settingsThemeImageRow(hasImage: Boolean): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(9), dp(8), dp(9), dp(9))
+        background = rounded(colorWithAlpha(OPAQUE_PANEL, .42f), dp(9), colorWithAlpha(BORDER, .65f), dp(1))
+        addView(label("背景图片", 12, TEXT, true), widthWrap())
+        addView(label("选择图片作为全局背景。", 10, MUTED), widthWrap())
+        val controls = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val preview = FrameLayout(this@MainActivity).apply {
+            background = GradientDrawable().apply {
+                setColor(colorWithAlpha(OPAQUE_PANEL, .7f))
+                cornerRadius = dp(7).toFloat()
+                setStroke(dp(1), BORDER, dp(4).toFloat(), dp(3).toFloat())
+            }
+            clipToOutline = true
+            contentDescription = if (hasImage) "当前背景图片预览" else "未设置背景图片"
+        }
+        val bitmap = if (hasImage) customThemeBackgroundBitmap() else null
+        if (bitmap != null) preview.addView(ImageView(this@MainActivity).apply {
+            setImageBitmap(bitmap)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+        }, FrameLayout.LayoutParams(MATCH, MATCH))
+        else preview.addView(label(if (hasImage) "无法预览" else "未设置", 10, MUTED).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(MATCH, MATCH))
+        controls.addView(preview, LinearLayout.LayoutParams(dp(76), dp(44)))
+        controls.addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(1), 1f))
+        fun imageButton(text: String, action: () -> Unit): TextView = label(text, 11, TEXT, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(10), 0, dp(10), 0)
+            background = rounded(colorWithAlpha(PANEL, .9f), dp(7), BORDER, dp(1))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
+        }
+        if (hasImage) controls.addView(imageButton("清除") {
+            prefs.edit().remove(KEY_CUSTOM_BACKGROUND_IMAGE).apply()
+            rerenderAppKeepSettings()
+        }, LinearLayout.LayoutParams(WRAP, dp(34)).apply { rightMargin = dp(7) })
+        controls.addView(imageButton(if (hasImage) "更换图片" else "选择图片") { chooseThemeBackground() }, LinearLayout.LayoutParams(WRAP, dp(34)))
+        addView(controls, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(8) })
     }
 
     private fun applyThemeFromSettings(theme: String) {
@@ -8214,6 +8835,81 @@ class MainActivity : Activity() {
         showToast("已加入输入框")
     }
 
+    private fun terminalChangeDirectoryCommand(shellName: String, path: String): String {
+        val shell = shellName.trim().lowercase(Locale.ROOT)
+            .substringAfterLast('/').substringAfterLast('\\').removeSuffix(".exe")
+        return when (shell) {
+            "pwsh", "powershell" -> "Set-Location -LiteralPath '${path.replace("'", "''")}'"
+            "cmd" -> {
+                val escapedPath = path.replace("\"", "\"\"")
+                "cd /d \"$escapedPath\""
+            }
+            else -> "cd -- '${path.replace("'", "'\\''")}'"
+        }
+    }
+
+    private fun isRunnableScriptPath(path: String): Boolean {
+        val extension = path.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return extension in setOf("py", "js", "mjs", "cjs", "sh", "ps1", "bat", "cmd") &&
+            path.none { it.code < 32 || it.code == 127 }
+    }
+
+    private fun terminalRunScriptCommand(shellName: String, path: String): String? {
+        if (!isRunnableScriptPath(path)) return null
+        val shell = shellName.trim().lowercase(Locale.ROOT)
+            .substringAfterLast('/').substringAfterLast('\\').removeSuffix(".exe")
+        val powershell = shell == "pwsh" || shell == "powershell"
+        val cmd = shell == "cmd"
+        if (cmd && path.any { it in "%!\"^" }) return null
+        val quotedPath = when {
+            powershell -> "'${path.replace("'", "''")}'"
+            cmd -> "\"$path\""
+            else -> "'${path.replace("'", "'\\''")}'"
+        }
+        return when (path.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
+            "py" -> "${if (cmd || powershell) "python" else "python3"} $quotedPath"
+            "js", "mjs", "cjs" -> "node $quotedPath"
+            "sh" -> "bash $quotedPath"
+            "ps1" -> if (powershell) "& $quotedPath" else "${if (cmd) "powershell" else "pwsh"} -NoProfile -File $quotedPath"
+            "bat", "cmd" -> when {
+                cmd -> "call $quotedPath"
+                powershell -> "& $quotedPath"
+                else -> null
+            }
+            else -> null
+        }
+    }
+
+    private fun runWorkspaceScriptInTerminal(path: String) {
+        if (!isRunnableScriptPath(path)) return
+        if (terminalOverlay != null) closeTerminal()
+        val separator = maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+        terminalRunCwd = when {
+            separator < 0 -> null
+            separator == 0 -> path.take(1)
+            separator == 2 && path.getOrNull(1) == ':' -> path.take(3)
+            else -> path.take(separator)
+        }
+        pendingTerminalRun = path
+        showTerminal(isolated = true)
+    }
+
+    private fun addWorkspacePathToTerminal(path: String) {
+        if (terminalOverlay == null) {
+            pendingTerminalDirectory = path
+            showTerminal()
+            return
+        }
+        val shellName = terminalShellName
+        if (shellName.isNullOrBlank()) {
+            pendingTerminalDirectory = path
+            return
+        }
+        val command = terminalChangeDirectoryCommand(shellName, path)
+        if (terminalReady && sendTerminalInput(command)) pendingTerminalDirectory = null
+        else pendingTerminalDirectory = path
+    }
+
     private fun showCreateEntry(anchor: View, parentPath: String, cwd: String?, refresh: () -> Unit) {
         showActionPopup(anchor, "新建", listOf(MenuAction("新建文件", "file_add"), MenuAction("新建文件夹", "folder_add"))) { index ->
             val kind = if (index == 0) "file" else "directory"
@@ -8240,7 +8936,11 @@ class MainActivity : Activity() {
         val absolutePath = listOf(workspaceRootPath.trimEnd('/'), path.trimStart('/')).filter { it.isNotBlank() }.joinToString("/")
         val actions = mutableListOf<MenuAction>()
         if (isDirectory && activeThreadId != null) actions += MenuAction("绑定当前聊天到此目录", "link")
-        if (absolutePath.isNotBlank() && !composerInput.text.toString().contains(absolutePath)) actions += MenuAction("加入输入框", "add")
+        if (isDirectory) actions += MenuAction("加入终端", "terminal")
+        if (!isDirectory && isRunnableScriptPath(path)) actions += MenuAction("终端运行", "play")
+        if (absolutePath.isNotBlank() && !composerInput.text.toString().contains(absolutePath)) {
+            actions += MenuAction("加入输入框", if (currentMode == "claude-code") "claude" else "codex")
+        }
         if (isDirectory) actions += listOf(MenuAction("新建文件", "file_add"), MenuAction("新建文件夹", "folder_add"))
         actions += listOf(
             MenuAction("重命名", "edit"),
@@ -8261,6 +8961,8 @@ class MainActivity : Activity() {
                         showToast("已绑定当前聊天的工作路径")
                     })
                 }
+                "加入终端" -> addWorkspacePathToTerminal(absolutePath)
+                "终端运行" -> runWorkspaceScriptInTerminal(absolutePath)
                 "加入输入框" -> insertWorkspacePathIntoComposer(absolutePath)
                 "新建文件" -> showCreateWorkspaceEntryDialog("file", path, cwd) { refreshed(path) }
                 "新建文件夹" -> showCreateWorkspaceEntryDialog("directory", path, cwd) { refreshed(path) }
@@ -8527,6 +9229,13 @@ class MainActivity : Activity() {
         val requestPath = workspaceRelativePath(effectiveCwd, path)
         val dialog = Dialog(this)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        var sourcePages: List<String> = emptyList()
+        val editedPages = mutableMapOf<Int, String>()
+        var currentPage = 0
+        var applyingPageContent = false
+        var pageRenderGeneration = 0
+        var loadFilePage: (Int, Boolean) -> Unit = { _, _ -> }
+        lateinit var previewScroll: ScrollView
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isFocusableInTouchMode = true
@@ -8541,6 +9250,15 @@ class MainActivity : Activity() {
             minHeight = dp(280)
             visibility = View.GONE
         }
+        previewInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (!applyingPageContent && currentPage in sourcePages.indices) {
+                    editedPages[currentPage] = s?.toString().orEmpty()
+                }
+            }
+            override fun afterTextChanged(s: android.text.Editable?) = Unit
+        })
         val imagePreview = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
             minimumHeight = dp(280)
@@ -8571,6 +9289,18 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(dp(if (retroTheme) 48 else 32), dp(if (retroTheme) 48 else 32)))
         layout.addView(header, LinearLayout.LayoutParams(MATCH, if (retroTheme) dp(48) else WRAP))
+        val pageStatus = label("", 11, MUTED).apply { gravity = Gravity.CENTER }
+        val previousPageButton = smallButton("上一页") { loadFilePage(currentPage - 1, false) }
+        val nextPageButton = smallButton("下一页") { loadFilePage(currentPage + 1, false) }
+        val pageControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            addView(previousPageButton, LinearLayout.LayoutParams(WRAP, dp(34)))
+            addView(pageStatus, LinearLayout.LayoutParams(0, dp(34), 1f))
+            addView(nextPageButton, LinearLayout.LayoutParams(WRAP, dp(34)))
+        }
+        layout.addView(pageControls, LinearLayout.LayoutParams(MATCH, dp(38)))
         val loadingStatus = label("正在加载文件…", 12, MUTED).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(80), dp(12), dp(18))
@@ -8582,7 +9312,64 @@ class MainActivity : Activity() {
             addView(loadingStatus, widthWrap())
             addView(retryButton, LinearLayout.LayoutParams(WRAP, dp(34)))
         }
-        val scroll = ScrollView(this).apply {
+        fun refreshPageControls(loadingPage: Boolean = false) {
+            val pageCount = sourcePages.size
+            pageControls.visibility = if (pageCount > 1) View.VISIBLE else View.GONE
+            pageStatus.text = if (appLanguage == "en") "Page ${currentPage + 1} of $pageCount" else "第 ${currentPage + 1} / $pageCount 页"
+            previousPageButton.isEnabled = !loadingPage && currentPage > 0
+            nextPageButton.isEnabled = !loadingPage && currentPage < pageCount - 1
+            saveButton.isEnabled = !loadingPage
+        }
+        fun assembleFileContent(): String {
+            if (currentPage in sourcePages.indices) editedPages[currentPage] = previewInput.text.toString()
+            return sourcePages.indices.joinToString(separator = "") { index -> editedPages[index] ?: sourcePages[index] }
+        }
+        fun pageAtOffset(pages: List<String>, offset: Int): Int {
+            var consumed = 0
+            pages.forEachIndexed { index, page ->
+                if (offset < consumed + page.length || index == pages.lastIndex) return index
+                consumed += page.length
+            }
+            return 0
+        }
+        loadFilePage = { requestedPage, forceReload ->
+            if (requestedPage in sourcePages.indices && (forceReload || requestedPage != currentPage)) {
+                if (currentPage in sourcePages.indices) editedPages[currentPage] = previewInput.text.toString()
+                currentPage = requestedPage
+                val pageContent = editedPages[currentPage] ?: sourcePages[currentPage]
+                val generation = ++pageRenderGeneration
+                previewInput.isEnabled = false
+                refreshPageControls(loadingPage = true)
+                io.execute {
+                    val highlightedPage = highlightedCode(requestPath, pageContent)
+                    handler.post {
+                        if (!dialog.isShowing || generation != pageRenderGeneration) return@post
+                        applyingPageContent = true
+                        previewInput.setText(highlightedPage)
+                        applyingPageContent = false
+                        previewInput.setSelection(previewInput.length())
+                        previewInput.isEnabled = true
+                        saveButton.isEnabled = true
+                        previewScroll.scrollTo(0, 0)
+                        refreshPageControls()
+                    }
+                }
+            }
+        }
+        saveButton.setOnClickListener {
+            val content = assembleFileContent()
+            val currentOffset = (0 until currentPage).sumOf { index ->
+                (editedPages[index] ?: sourcePages[index]).length
+            }
+            savePreviewFile(requestPath, effectiveCwd, content, previewInput.tag?.toString().orEmpty(), previewInput) {
+                sourcePages = splitFilePreviewPages(content)
+                editedPages.clear()
+                currentPage = pageAtOffset(sourcePages, currentOffset.coerceAtMost(content.length))
+                refreshPageControls()
+                if (dialog.isShowing) loadFilePage(currentPage, true)
+            }
+        }
+        previewScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -8591,8 +9378,8 @@ class MainActivity : Activity() {
             }, FrameLayout.LayoutParams(MATCH, WRAP))
         }
         layout.addView(state, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        layout.addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(6) })
-        scroll.visibility = View.GONE
+        layout.addView(previewScroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(6) })
+        previewScroll.visibility = View.GONE
         dialog.setContentView(layout)
         layout.requestFocus()
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
@@ -8611,7 +9398,7 @@ class MainActivity : Activity() {
         lateinit var loadPreview: () -> Unit
         loadPreview = {
             state.visibility = View.VISIBLE
-            scroll.visibility = View.GONE
+            previewScroll.visibility = View.GONE
             loadingStatus.text = "正在加载文件…"
             loadingStatus.setTextColor(MUTED)
             retryButton.visibility = View.GONE
@@ -8630,19 +9417,26 @@ class MainActivity : Activity() {
                         decodeSampledBitmap(data, 1600) ?: throw IOException("图片内容无法解析")
                     } else null
                     val content = if (isImage) null else file.optString("content")
-                    val highlightedContent = content?.let { highlightedCode(requestPath, it) }
+                    val filePages = content?.let(::splitFilePreviewPages).orEmpty()
+                    val highlightedContent = filePages.firstOrNull()?.let { highlightedCode(requestPath, it) }
                     handler.post {
                         if (!dialog.isShowing) return@post
                         state.visibility = View.GONE
-                        scroll.visibility = View.VISIBLE
+                        previewScroll.visibility = View.VISIBLE
                         if (isImage) {
                             imagePreview.setImageBitmap(bitmap)
                             imagePreview.visibility = View.VISIBLE
                         } else {
+                            sourcePages = filePages.ifEmpty { listOf("") }
+                            editedPages.clear()
+                            currentPage = 0
                             previewInput.tag = file.optString("revision")
+                            applyingPageContent = true
                             previewInput.setText(highlightedContent)
+                            applyingPageContent = false
                             previewInput.visibility = View.VISIBLE
                             saveButton.visibility = View.VISIBLE
+                            refreshPageControls()
                         }
                     }
                 } catch (error: Exception) { showPreviewError(error) }
@@ -8651,6 +9445,39 @@ class MainActivity : Activity() {
         }
         retryButton.setOnClickListener { loadPreview() }
         loadPreview()
+    }
+
+    private fun splitFilePreviewPages(content: String): List<String> {
+        val lineCount = content.count { it == '\n' } + if (content.isNotEmpty() && !content.endsWith('\n')) 1 else 0
+        if (lineCount <= FILE_PREVIEW_SINGLE_PAGE_MAX_LINES && content.length <= FILE_PREVIEW_SINGLE_PAGE_MAX_CHARS) {
+            return listOf(content)
+        }
+        if (content.isEmpty()) return listOf("")
+
+        val pages = mutableListOf<String>()
+        var start = 0
+        while (start < content.length) {
+            val hardEnd = (start + FILE_PREVIEW_PAGE_MAX_CHARS).coerceAtMost(content.length)
+            var end = hardEnd
+            var scan = start
+            var lines = 0
+            while (scan < hardEnd && lines < FILE_PREVIEW_PAGE_MAX_LINES) {
+                if (content[scan] == '\n') lines += 1
+                scan += 1
+            }
+            if (lines >= FILE_PREVIEW_PAGE_MAX_LINES) {
+                end = scan
+            } else if (hardEnd < content.length) {
+                val lastLineBreak = content.lastIndexOf('\n', hardEnd - 1)
+                if (lastLineBreak >= start && lastLineBreak + 1 - start >= FILE_PREVIEW_PAGE_MAX_CHARS / 2) {
+                    end = lastLineBreak + 1
+                }
+            }
+            if (end <= start) end = hardEnd
+            pages += content.substring(start, end)
+            start = end
+        }
+        return pages
     }
 
     private fun workspaceRelativePath(cwd: String?, path: String): String {
@@ -8678,22 +9505,43 @@ class MainActivity : Activity() {
 
     private fun isWorkspaceImagePath(path: String): Boolean = path.substringAfterLast('.', "").lowercase(Locale.ROOT) in setOf("png", "jpg", "jpeg", "webp", "gif")
 
-    private fun savePreviewFile(path: String, cwd: String?, content: String, revision: String, editor: EditText) {
+    private fun savePreviewFile(
+        path: String,
+        cwd: String?,
+        content: String,
+        revision: String,
+        editor: EditText,
+        onSaved: (() -> Unit)? = null,
+    ) {
         if (revision.isBlank()) { showToast("文件还在加载"); return }
         runApi({ RemoteApi(endpoint, token).post("/api/v1/codex/workspace/file", JSONObject()
             .put("path", path).put("content", content).put("revision", revision).putOpt("cwd", cwd)) }, { result ->
             showToast("已保存")
             if (result.has("revision")) editor.tag = result.optString("revision")
+            onSaved?.invoke()
         })
     }
 
-    private fun showTerminal() {
+    private fun showTerminal(isolated: Boolean = false) {
         if (terminalOverlay != null) return
+        terminalShellName = null
         preferencePopup?.dismiss()
-        terminalScreen = TerminalScreenBuffer(88, 26)
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+            ?.hideSoftInputFromWindow(composerInput.windowToken, 0)
+        composerInput.clearFocus()
+        composerDock.visibility = View.GONE
+        root.requestFocus()
+        terminalThreadId = if (isolated) null else activeThreadId
+        terminalScreenKey = terminalThreadId?.let { "$endpoint\u0000$token\u0000$it" }
+        val cachedTerminal = terminalScreenKey?.let(terminalScreenCache::remove)
+        terminalScreen = cachedTerminal?.first ?: TerminalScreenBuffer(88, 26)
+        terminalPersistent = cachedTerminal?.second ?: false
+        terminalScreen.prepareForReconnect()
+        terminalColumns = terminalScreen.columnCount
+        terminalRows = terminalScreen.rowCount
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(if (retroTheme) 0 else dp(10), 0, if (retroTheme) 0 else dp(10), dp(8))
+            setPadding(if (retroTheme) 0 else dp(10), 0, if (retroTheme) 0 else dp(10), dp(4))
             background = wallpaperBackground(
                 if (themeName == "custom") OPAQUE_PANEL else if (lightTheme) Color.rgb(250, 250, 251) else Color.rgb(12, 14, 17),
                 viewportWidthPx = root.width,
@@ -8719,53 +9567,69 @@ class MainActivity : Activity() {
                 background = android1SegmentButtonBackground()
             }
         }, LinearLayout.LayoutParams(dp(if (retroTheme) 48 else 40), dp(if (retroTheme) 48 else 40)))
-        header.addView(View(this), LinearLayout.LayoutParams(dp(40), dp(1)))
         shell.addView(header, LinearLayout.LayoutParams(MATCH, systemInsetTop + dp(if (retroTheme) 48 else 44)))
         terminalStatusView = label("正在连接终端…", 10, MUTED).apply {
             setPadding(dp(3), 0, dp(3), dp(4))
         }
         shell.addView(terminalStatusView, widthWrap())
-        terminalOutput = label("", 12, if (lightTheme) SUBTLE else Color.rgb(207, 214, 226), pixelize = false).apply {
+        terminalOutput = TerminalOutputView(this).apply {
+            textSize = adjustedTextSize(12)
+            setTag(R.id.base_text_size, 12f)
+            setTextColor(if (lightTheme) SUBTLE else Color.rgb(207, 214, 226))
             typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
+            setTextIsSelectable(false)
+            setHorizontallyScrolling(true)
+            includeFontPadding = false
             setPadding(dp(9), dp(9), dp(9), dp(9))
             gravity = Gravity.TOP or Gravity.START
-            minHeight = dp(190)
+            setOnClickListener { focusTerminalInput() }
+            setOnLongClickListener {
+                setTextIsSelectable(true)
+                false
+            }
+            setOnFocusChangeListener { _, hasFocus ->
+                if (hasFocus && terminalImeVisible && !terminalScrollGestureActive) {
+                    terminalInputSink?.post { terminalInputSink?.requestFocus() }
+                }
+            }
+        }
+        val registerTerminalScrollTouch: (MotionEvent) -> Unit = { event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    terminalScrollInteractionRevision++
+                    terminalScrollGestureActive = true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    terminalScrollInteractionRevision++
+                    terminalScrollGestureActive = false
+                }
+            }
+        }
+        terminalOutput?.setOnTouchListener { _, event ->
+            registerTerminalScrollTouch(event)
+            false
         }
         val outputScroll = ScrollView(this).apply {
             isFillViewport = true; isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
             background = rounded(if (lightTheme) Color.rgb(244, 246, 248) else Color.rgb(8, 10, 12), dp(8))
             addView(terminalOutput, FrameLayout.LayoutParams(MATCH, WRAP))
+            setOnTouchListener { _, event ->
+                registerTerminalScrollTouch(event)
+                false
+            }
         }
-        shell.addView(outputScroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(5); bottomMargin = dp(5) })
+        outputScroll.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateTerminalDimensions() }
+        terminalOutputScroll = outputScroll
+        val terminalContent = FrameLayout(this).apply {
+            addView(outputScroll, FrameLayout.LayoutParams(MATCH, MATCH))
+        }
+        shell.addView(terminalContent, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(4); bottomMargin = dp(4) })
         val arrows = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        listOf("↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C", "Tab" to "\t", "Esc" to "\u001b", "Ctrl+C" to "\u0003").forEach { (label, value) ->
+        listOf("←" to "\u001b[D", "↑" to "\u001b[A", "↓" to "\u001b[B", "→" to "\u001b[C", "Tab" to "\t", "Esc" to "\u001b", "Ctrl+C" to "\u0003").forEach { (label, value) ->
             arrows.addView(smallButton(label) { sendTerminalInput(value) }, LinearLayout.LayoutParams(0, dp(32), 1f).apply { leftMargin = dp(2); rightMargin = dp(2) })
         }
         shell.addView(arrows, widthWrap())
-        val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        terminalDraftInput = editField("终端命令", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS).apply {
-            typeface = Typeface.MONOSPACE
-            setSingleLine(true)
-            isFocusable = true
-            isFocusableInTouchMode = true
-            showSoftInputOnFocus = true
-            imeOptions = EditorInfo.IME_ACTION_SEND
-            setOnEditorActionListener { _, action, _ ->
-                if (action == EditorInfo.IME_ACTION_SEND || action == EditorInfo.IME_NULL) { sendTerminalLine(); true } else false
-            }
-            setOnClickListener {
-                requestFocus()
-                post {
-                    (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-                        ?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
-                }
-            }
-        }
-        inputRow.addView(terminalDraftInput, LinearLayout.LayoutParams(0, dp(42), 1f))
-        inputRow.addView(textIconAction("发送", "arrow_up", "发送") { sendTerminalLine() }, LinearLayout.LayoutParams(WRAP, dp(38)).apply { leftMargin = dp(5) })
-        shell.addView(inputRow, LinearLayout.LayoutParams(MATCH, dp(44)).apply { topMargin = dp(5) })
-        val transferRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END or Gravity.CENTER_VERTICAL }
+        val transferRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         transferRow.addView(textIconAction("复制到输入框", "paste", "复制到输入框") {
             val output = terminalOutput ?: return@textIconAction
             val fullText = output.text.toString()
@@ -8776,34 +9640,81 @@ class MainActivity : Activity() {
                 composerInput.append(value.takeLast(120_000))
                 closeTerminal()
             }
-        }, LinearLayout.LayoutParams(WRAP, dp(36)))
-        shell.addView(transferRow, LinearLayout.LayoutParams(MATCH, dp(38)))
+        }, LinearLayout.LayoutParams(WRAP, dp(32)))
+        transferRow.addView(View(this), LinearLayout.LayoutParams(0, MATCH, 1f))
+        transferRow.addView(smallButton("键盘") { focusTerminalInput() }, LinearLayout.LayoutParams(dp(50), dp(36)))
+        shell.addView(transferRow, LinearLayout.LayoutParams(MATCH, dp(36)))
+        terminalInputSink = TerminalInputSink(this, ::sendTerminalInput).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        terminalContent.addView(terminalInputSink, FrameLayout.LayoutParams(MATCH, dp(36), Gravity.BOTTOM))
         terminalReady = false
         terminalImeVisible = false
+        terminalLockedImeInset = 0
+        terminalLockedContentBottom = 0
+        terminalScrollInteractionRevision = 0L
+        terminalScrollGestureActive = false
+        terminalInputFocusPending = false
         terminalOverlay = shell
         root.addView(shell, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.TOP))
         terminalPositionListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> positionTerminalOverlay() }
         terminalPositionListener?.let { listener ->
             root.addOnLayoutChangeListener(listener)
-            composerDock.addOnLayoutChangeListener(listener)
+            page.addOnLayoutChangeListener(listener)
         }
         positionTerminalOverlay()
-        shell.post { positionTerminalOverlay() }
+        shell.post {
+            positionTerminalOverlay()
+            updateTerminalDimensions()
+            scheduleTerminalRender()
+        }
         connectTerminal()
+    }
+
+    private fun focusTerminalInput() {
+        val input = terminalInputSink ?: return
+        if (!terminalReady) {
+            terminalInputFocusPending = true
+            showToast("终端连接中，请稍等")
+            return
+        }
+        terminalInputFocusPending = false
+        composerInput.clearFocus()
+        terminalOutput?.setTextIsSelectable(false)
+        terminalOutput?.scrollTo(0, 0)
+        if (!input.hasFocus()) input.setText("")
+        if (!input.requestFocus()) {
+            input.isFocusableInTouchMode = true
+            input.requestFocus()
+        }
+        input.post {
+            if (terminalInputSink === input && input.hasFocus()) {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
     }
 
     private fun positionTerminalOverlay() {
         val shell = terminalOverlay ?: return
-        if (!::root.isInitialized || !::composerDock.isInitialized || root.height <= 0) return
+        if (!::root.isInitialized || !::page.isInitialized || root.height <= 0) return
         val rootLocation = IntArray(2)
-        val composerLocation = IntArray(2)
+        val pageLocation = IntArray(2)
         root.getLocationOnScreen(rootLocation)
-        composerDock.getLocationOnScreen(composerLocation)
-        val composerTop = (composerLocation[1] - rootLocation[1]).coerceIn(0, root.height)
+        page.getLocationOnScreen(pageLocation)
+        val measuredBottom = (pageLocation[1] - rootLocation[1] + page.height - page.paddingBottom)
+            .coerceIn(0, root.height)
+        val contentBottom = if (terminalInputSink?.hasFocus() == true &&
+            (terminalImeVisible || imeInsetVisible || terminalLockedContentBottom > 0)
+        ) {
+            terminalLockedContentBottom = if (terminalLockedContentBottom == 0) measuredBottom
+                else minOf(terminalLockedContentBottom, measuredBottom)
+            terminalLockedContentBottom
+        } else measuredBottom
         (shell.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
-            if (params.height != composerTop) {
+            if (params.height != contentBottom || params.width != MATCH) {
                 params.width = MATCH
-                params.height = composerTop
+                params.height = contentBottom
                 params.gravity = Gravity.TOP
                 shell.layoutParams = params
             }
@@ -8818,89 +9729,193 @@ class MainActivity : Activity() {
         (shell.getChildAt(0) as? ViewGroup)?.setPadding(0, systemInsetTop, 0, 0)
     }
 
+    private fun updateTerminalDimensions(forceSend: Boolean = false) {
+        val scroll = terminalOutputScroll ?: return
+        val output = terminalOutput ?: return
+        if (scroll.width <= 0 || scroll.height <= 0) return
+        val usableWidth = (scroll.width - output.paddingLeft - output.paddingRight - dp(4)).coerceAtLeast(1)
+        val usableHeight = (scroll.height - output.paddingTop - output.paddingBottom - dp(6)).coerceAtLeast(1)
+        val cellWidth = output.paint.measureText("M").coerceAtLeast(1f)
+        val lineHeight = output.paint.fontSpacing.coerceAtLeast(1f)
+        val columns = (usableWidth / cellWidth).toInt().coerceIn(20, 300)
+        val rows = (usableHeight / lineHeight).toInt().coerceIn(5, 120)
+        val changed = columns != terminalColumns || rows != terminalRows
+        if (!changed && !forceSend) return
+        terminalResizeRunnable?.let(handler::removeCallbacks)
+        terminalResizeRunnable = null
+        val apply = Runnable {
+            terminalResizeRunnable = null
+            if (terminalOutputScroll !== scroll || terminalOutput !== output) return@Runnable
+            val dimensionChanged = columns != terminalColumns || rows != terminalRows
+            if (dimensionChanged) {
+                terminalColumns = columns
+                terminalRows = rows
+                terminalScreen.resize(columns, rows)
+                scheduleTerminalRender()
+            }
+            if (terminalReady && (dimensionChanged || forceSend)) sendTerminalResize()
+        }
+        if (forceSend || !terminalReady) apply.run()
+        else {
+            terminalResizeRunnable = apply
+            handler.postDelayed(apply, 350L)
+        }
+    }
+
+    private fun sendTerminalResize() {
+        terminalSocket?.send(JSONObject().put("type", "resize")
+            .put("columns", terminalColumns).put("rows", terminalRows).toString())
+    }
+
     private fun closeTerminal() {
         val shell = terminalOverlay ?: return
+        terminalScreenKey?.let { key ->
+            terminalScreenCache[key] = terminalScreen to terminalPersistent
+            while (terminalScreenCache.size > 8) terminalScreenCache.remove(terminalScreenCache.keys.first())
+        }
+        terminalScreenKey = null
+        terminalThreadId = null
         terminalPositionListener?.let { listener ->
             if (::root.isInitialized) root.removeOnLayoutChangeListener(listener)
-            if (::composerDock.isInitialized) composerDock.removeOnLayoutChangeListener(listener)
+            if (::page.isInitialized) page.removeOnLayoutChangeListener(listener)
         }
         terminalPositionListener = null
+        terminalResizeRunnable?.let(handler::removeCallbacks)
+        terminalResizeRunnable = null
+        terminalRenderRunnable?.let(handler::removeCallbacks)
+        terminalRenderRunnable = null
         (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-            ?.hideSoftInputFromWindow(terminalDraftInput?.windowToken, 0)
+            ?.hideSoftInputFromWindow(terminalInputSink?.windowToken, 0)
         if (::root.isInitialized && shell.parent === root) root.removeView(shell)
+        root.requestFocus()
+        composerDock.visibility = View.VISIBLE
         terminalReady = false
+        terminalPersistent = false
+        terminalShellName = null
+        pendingTerminalDirectory = null
+        pendingTerminalRun = null
+        terminalRunCwd = null
         terminalSocket?.close(1000, "closed")
         terminalSocket = null
         terminalOverlay = null
-        terminalDraftInput = null
+        terminalInputSink = null
         terminalOutput = null
+        terminalOutputScroll = null
         terminalStatusView = null
         terminalImeVisible = false
+        terminalLockedImeInset = 0
+        terminalLockedContentBottom = 0
         terminalImeHiddenUntil = 0L
+        terminalInputFocusPending = false
     }
 
     private fun connectTerminal() {
         updateTerminalStatus("正在连接电脑终端…", MUTED)
         val url = endpoint.replaceFirst(Regex("^http"), "ws") + "/api/v1/codex/terminal"
         val request = Request.Builder().url(url).build()
+        val thread = terminalThreadId
+        val cwd = terminalRunCwd ?: activeThread?.optString("cwd")?.takeIf { it.isNotBlank() && it != "null" } ?: runtime.optString("workspace", "")
         terminalSocket = socketClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (terminalSocket !== webSocket) return
                 updateTerminalStatus("连接成功，正在恢复终端会话…", MUTED)
-                val thread = activeThreadId
-                val cwd = activeThread?.optString("cwd")?.takeIf { it.isNotBlank() && it != "null" } ?: runtime.optString("workspace", "")
                 val sent = webSocket.send(JSONObject().put("type", "terminal.connect").put("token", token)
                     .putOpt("threadId", thread).putOpt("cwd", cwd.takeIf { it.isNotBlank() })
-                    .put("columns", 88).put("rows", 26).toString())
+                    .put("compactPrompt", true)
+                    .put("columns", terminalColumns).put("rows", terminalRows).toString())
                 if (!sent) updateTerminalStatus("终端连接信息发送失败", ERROR)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (terminalSocket !== webSocket) return
                 try {
                     val event = JSONObject(text)
                     when (event.optString("type")) {
                         "ready" -> {
                             terminalReady = true
+                            val shellName = event.optString("shell")
+                            handler.post {
+                                if (terminalSocket !== webSocket) return@post
+                                terminalShellName = shellName
+                                terminalPersistent = event.optBoolean("persistent")
+                                updateTerminalDimensions(forceSend = true)
+                                scheduleTerminalRender()
+                                if (terminalInputFocusPending) focusTerminalInput()
+                                pendingTerminalDirectory?.let { path ->
+                                    val command = terminalChangeDirectoryCommand(shellName, path)
+                                    if (sendTerminalInput(command)) pendingTerminalDirectory = null
+                                }
+                                pendingTerminalRun?.let { path ->
+                                    pendingTerminalRun = null
+                                    val command = terminalRunScriptCommand(shellName, path)
+                                    if (command == null) showToast("当前终端不支持此脚本类型或路径")
+                                    else if (!sendTerminalInput("$command\r")) showToast("脚本命令发送失败")
+                                }
+                            }
                             updateTerminalStatus("${event.optString("shell")} · ${event.optString("cwd")}", if (retroTheme) ANDROID1_ADDED_COLOR else if (lightTheme) Color.rgb(44, 126, 70) else Color.rgb(119, 174, 132))
                         }
                         "error" -> {
                             terminalReady = false
                             val message = event.optString("message", "终端连接失败")
                             updateTerminalStatus(message, ERROR)
-                            appendTerminal("$message\n")
+                            appendTerminal("$message\n", webSocket)
                         }
                         "exit" -> {
                             terminalReady = false
                             updateTerminalStatus("终端会话已结束", WARNING)
-                            appendTerminal("\n[终端已退出]\n")
+                            appendTerminal("\n[终端已退出]\n", webSocket)
                         }
                     }
                 } catch (_: JSONException) { }
             }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { appendTerminal(bytes.utf8()) }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { appendTerminal(bytes.utf8(), webSocket) }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (terminalSocket !== webSocket) return
                 terminalReady = false
                 val message = "终端连接失败：${t.message ?: "未知错误"}"
                 updateTerminalStatus(message, ERROR)
-                appendTerminal("\n$message\n")
+                appendTerminal("\n$message\n", webSocket)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (terminalSocket !== webSocket) return
                 terminalReady = false
                 if (terminalOverlay != null) {
                     updateTerminalStatus("连接已关闭（$code）", WARNING)
-                    appendTerminal("\n终端连接已关闭：${reason.ifBlank { "无原因说明" }}\n")
+                    appendTerminal("\n终端连接已关闭：${reason.ifBlank { "无原因说明" }}\n", webSocket)
                 }
             }
         })
     }
 
-    private fun appendTerminal(value: String) = handler.post {
-        val output = terminalOutput ?: return@post
-        output.text = terminalScreen.append(value)
-        (output.parent as? ScrollView)?.let { scroll ->
-            scroll.post { scroll.scrollTo(0, output.height) }
+    private fun appendTerminal(value: String, source: WebSocket) = handler.post {
+        if (terminalSocket !== source || terminalOutput == null) return@post
+        terminalScreen.append(value)
+        scheduleTerminalRender()
+    }
+
+    private fun scheduleTerminalRender() {
+        if (terminalRenderRunnable != null) return
+        val pending = Runnable {
+            terminalRenderRunnable = null
+            val output = terminalOutput ?: return@Runnable
+            val scroll = output.parent as? ScrollView
+            val oldScrollY = scroll?.scrollY ?: 0
+            val interactionRevision = terminalScrollInteractionRevision
+            val rendered = terminalScreen.render(hideStatusLine = terminalPersistent)
+            if (output.text.toString() != rendered) output.text = rendered
+            output.updateCursor(if (terminalReady) terminalScreen.cursorPosition(hideStatusLine = terminalPersistent) else null)
+            if (terminalInputSink?.hasFocus() == true) output.scrollTo(0, 0)
+            scroll?.post {
+                if (terminalScrollGestureActive || interactionRevision != terminalScrollInteractionRevision) return@post
+                val child = scroll.getChildAt(0) ?: return@post
+                val maxScrollY = (child.height - scroll.height).coerceAtLeast(0)
+                scroll.scrollTo(0, oldScrollY.coerceAtMost(maxScrollY))
+            }
         }
+        terminalRenderRunnable = pending
+        handler.postDelayed(pending, 16L)
     }
 
     private fun updateTerminalStatus(value: String, color: Int) = handler.post {
@@ -8908,17 +9923,6 @@ class MainActivity : Activity() {
             text = value
             setTextColor(color)
         }
-    }
-
-    private fun sendTerminalLine() {
-        val input = terminalDraftInput ?: return
-        val value = input.text.toString()
-        if (value.isBlank()) return
-        if (!terminalReady) {
-            showToast("终端还在连接，命令先留在输入框里")
-            return
-        }
-        if (sendTerminalInput(value + "\n")) input.setText("")
     }
 
     private fun sendTerminalInput(value: String): Boolean {
@@ -9130,7 +10134,12 @@ class MainActivity : Activity() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (socket !== webSocket || generation != connectionGeneration) return
                 lastSocketActivityAt = System.currentTimeMillis()
-                try { handleSocketEvent(JSONObject(text)) } catch (_: JSONException) { }
+                try {
+                    val event = JSONObject(text)
+                    handler.post {
+                        if (socket === webSocket && generation == connectionGeneration) handleSocketEvent(event)
+                    }
+                } catch (_: JSONException) { }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -9183,9 +10192,13 @@ class MainActivity : Activity() {
                     handler.post { renderMessages(false) }
                 }
             }
-            "threads.changed" -> {
-                if (foreground) handler.post { refreshThreads(false) }
-                else backgroundListDirty = true
+            "threads.changed", "claude.threads.changed" -> scheduleThreadListRefresh()
+            "thread.history.changed" -> {
+                val threadId = event.optString("threadId")
+                if (threadId == activeThreadId && event.optString("revision") != activeThread?.optString("historyRevision")) {
+                    clearKnownEmptyThread(threadId)
+                    scheduleActiveThreadRefresh()
+                }
             }
             "remote.queue.changed" -> {
                 if (event.optString("threadId") == activeThreadId) {
@@ -9200,42 +10213,64 @@ class MainActivity : Activity() {
     private fun handleNotificationEvent(event: JSONObject) {
         val method = event.optString("method")
         val params = event.optJSONObject("params") ?: JSONObject()
+        val threadId = eventThreadId(params) ?: activeThreadId.takeIf { targetsActiveThread(params) }
+        val turnId = eventTurnId(params)
+        if (threadId != null && turnId != null && finishedTurnStates.containsKey("$threadId:$turnId") &&
+            method != "turn/completed" && method != "turn/workspaceChanges") {
+            if (threadId == activeThreadId) scheduleActiveThreadRefresh()
+            return
+        }
         when (method) {
             "turn/started" -> {
                 val eventThread = eventThreadId(params)
-                if (eventThread != null) handler.post {
+                if (eventThread != null && turnId != null) pendingLiveTurnIds[eventThread] = turnId
+                if (eventThread != null) run {
                     pausedThreadKeys.remove(threadTitleKey(eventThread))
                     clearKnownEmptyThread(eventThread)
                 }
                 if (eventThread == activeThreadId) {
+                    turnLifecycleGeneration++
                     running = true
                     clearLiveActivity()
                     liveActivityTurnId = params.optString("turnId").ifBlank { params.optJSONObject("turn")?.optString("id").orEmpty() }
                         .takeIf(String::isNotBlank)
-                    if (foreground) handler.post { renderHeader(); renderMessages(false) }
+                    if (foreground) run {
+                        renderHeader()
+                        renderMessages(false)
+                        scheduleActiveThreadRefresh()
+                    }
                     else backgroundThreadDirty = true
                 }
             }
             "turn/completed" -> {
                 val eventThread = eventThreadId(params)
+                if (eventThread != null && turnId != null) {
+                    rememberFinishedTurn(eventThread, turnId, params.optJSONObject("turn") ?: JSONObject().put("status", "completed"))
+                }
                 if (eventThread == activeThreadId) {
+                    turnLifecycleGeneration++
+                    // A completion from the previous turn cannot stop a newer reply.
+                    if (turnId != null && liveActivityTurnId != null && turnId != liveActivityTurnId) {
+                        scheduleActiveThreadRefresh()
+                        return
+                    }
                     running = false
                     clearLiveActivity()
-                    if (foreground) handler.post { clearKnownEmptyThread(eventThread.orEmpty()); renderHeader(); refreshActiveThread(false); refreshQueue(false) }
+                    if (foreground) run { clearKnownEmptyThread(eventThread.orEmpty()); renderHeader(); refreshActiveThread(false); refreshQueue(false) }
                     else { backgroundThreadDirty = true; backgroundQueueDirty = true }
                 } else if (eventThread != null) {
                     pendingCompletionNoticeThreadId = eventThread
                 }
                 if (!foreground && eventThread != null) showSystemNotification(eventThread)
-                if (foreground) handler.post { refreshThreads(false) }
+                if (foreground) run { refreshThreads(false) }
                 else backgroundListDirty = true
             }
             "item/agentMessage/delta" -> {
                 val eventThread = eventThreadId(params)
-                if (eventThread == activeThreadId) {
-                    if (foreground) handler.post {
-                        if (eventThread != activeThreadId) return@post
-                        val turnId = params.optString("turnId").ifBlank {
+                if (targetsActiveThread(params)) {
+                    if (foreground) run {
+                        if (!targetsActiveThread(params)) return@run
+                        val turnId = eventTurnId(params).orEmpty().ifBlank {
                             activeThread?.optJSONArray("turns")?.let { turns -> turns.optJSONObject(turns.length() - 1)?.optString("id") }.orEmpty()
                         }
                         if (turnId.isNotBlank()) {
@@ -9252,11 +10287,10 @@ class MainActivity : Activity() {
                 }
             }
             "turn/plan/updated", "reasoning/summaryTextDelta" -> {
-                val eventThread = eventThreadId(params)
-                if (eventThread == activeThreadId) {
-                    if (foreground) handler.post {
-                        if (eventThread != activeThreadId) return@post
-                        val turnId = params.optString("turnId").ifBlank {
+                if (targetsActiveThread(params)) {
+                    if (foreground) run {
+                        if (!targetsActiveThread(params)) return@run
+                        val turnId = eventTurnId(params).orEmpty().ifBlank {
                             liveActivityTurnId.orEmpty().ifBlank {
                                 activeThread?.optJSONArray("turns")?.let { turns -> turns.optJSONObject(turns.length() - 1)?.optString("id") }.orEmpty()
                             }
@@ -9276,14 +10310,17 @@ class MainActivity : Activity() {
             }
             "item/started", "item/completed", "item/fileChange/patchUpdated", "turn/workspaceChanges" -> {
                 val eventThread = eventThreadId(params)
-                if (eventThread == activeThreadId) {
-                    if (foreground) handler.post {
-                        if (eventThread != activeThreadId) return@post
+                if (targetsActiveThread(params)) {
+                    if (foreground) run {
+                        if (!targetsActiveThread(params)) return@run
+                        val targetThreadId = eventThread ?: activeThreadId ?: return@run
                         if (method == "item/started" || method == "item/completed") {
                             val item = params.optJSONObject("item")
                             val type = normalizedType(item?.optString("type").orEmpty())
-                            if (item != null && type != "usermessage") {
-                                val turnId = params.optString("turnId").ifBlank {
+                            if (item != null && type == "usermessage") {
+                                if (rememberRemoteUserMessage(targetThreadId, eventTurnId(params), item)) renderMessages(false)
+                            } else if (item != null && type != "usermessage") {
+                                val turnId = eventTurnId(params).orEmpty().ifBlank {
                                     activeThread?.optJSONArray("turns")?.let { turns -> turns.optJSONObject(turns.length() - 1)?.optString("id") }.orEmpty()
                                 }
                                 if (turnId.isNotBlank()) {
@@ -9302,7 +10339,7 @@ class MainActivity : Activity() {
                                 }
                             }
                         } else if (method == "item/fileChange/patchUpdated") {
-                            val turnId = params.optString("turnId").ifBlank {
+                            val turnId = eventTurnId(params).orEmpty().ifBlank {
                                 activeThread?.optJSONArray("turns")?.let { turns -> turns.optJSONObject(turns.length() - 1)?.optString("id") }.orEmpty()
                             }
                             if (turnId.isNotBlank()) {
@@ -9324,7 +10361,7 @@ class MainActivity : Activity() {
                 }
             }
             "thread/name/updated" -> {
-                handler.post {
+                run {
                     eventThreadId(params)?.let { threadId ->
                         val name = params.optString("threadName")
                         if (name.isNotBlank()) displayedThreadTitles[threadTitleKey(threadId)] = name
@@ -9334,13 +10371,13 @@ class MainActivity : Activity() {
                 }
             }
             "thread/deleted" -> {
-                handler.post {
+                run {
                     eventThreadId(params)?.let { displayedThreadTitles.remove(threadTitleKey(it)) }
                     if (foreground) refreshThreads(false) else backgroundListDirty = true
                 }
             }
             "remote.pins.changed" -> {
-                if (foreground) handler.post { refreshThreads(false) }
+                if (foreground) run { refreshThreads(false) }
                 else backgroundListDirty = true
             }
         }
@@ -9349,6 +10386,18 @@ class MainActivity : Activity() {
     private fun eventThreadId(params: JSONObject): String? {
         params.optString("threadId").takeIf { it.isNotBlank() && it != "null" }?.let { return it }
         return params.optJSONObject("turn")?.optString("threadId")?.takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    private fun eventTurnId(params: JSONObject): String? {
+        params.optString("turnId").takeIf { it.isNotBlank() && it != "null" }?.let { return it }
+        return params.optJSONObject("turn")?.optString("id")?.takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    private fun targetsActiveThread(params: JSONObject): Boolean {
+        val eventThread = eventThreadId(params)
+        if (eventThread != null) return eventThread == activeThreadId
+        val eventTurn = eventTurnId(params)
+        return eventTurn != null && eventTurn == liveActivityTurnId
     }
 
     private fun respondApproval(decision: String) {
@@ -9370,14 +10419,14 @@ class MainActivity : Activity() {
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Codex Remote", NotificationManager.IMPORTANCE_DEFAULT))
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Code Remote", NotificationManager.IMPORTANCE_DEFAULT))
             if (manager.getNotificationChannel(CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE) {
                 if (test) handler.post { showToast("手机系统已关闭此通知类别") }
                 return
             }
         }
         val thread = threadId?.let(::findThread)
-        val profileName = connectionProfiles.firstOrNull { it.id == activeConnectionId }?.name ?: "CAR"
+        val profileName = connectionProfiles.firstOrNull { it.id == activeConnectionId }?.name ?: "Code Remote"
         val threadName = thread?.optString("name")?.takeIf { !it.isNullOrBlank() && it != "null" } ?: "回复完成"
         val title = if (test) "$profileName · 测试通知" else "$profileName · $threadName"
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -9468,7 +10517,7 @@ class MainActivity : Activity() {
         val pieces = mutableListOf<String>()
         for (index in 0 until content.length()) {
             val part = content.optJSONObject(index) ?: continue
-            if (part.optString("type") == "text") pieces += part.optString("text")
+            if (part.has("text") && part.opt("text") is String) pieces += part.optString("text")
         }
         return pieces.joinToString("").ifBlank { item.optString("text") }
     }
@@ -9490,6 +10539,22 @@ class MainActivity : Activity() {
             firstJsonValue(turn, "startedAt", "started_at", "startedAtMs", "started_at_ms", "createdAt", "created_at", "timestamp", "timestampMs", "timestamp_ms")
         }
         return formatMessageTime(itemValue ?: turnValue)
+    }
+
+    private fun formatTurnDuration(durationMs: Long): String {
+        val totalSeconds = durationMs.coerceAtLeast(0L) / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = totalSeconds % 3600L / 60L
+        val seconds = totalSeconds % 60L
+        return if (appLanguage == "en") {
+            if (hours > 0L) "${hours}h ${minutes}m ${seconds}s"
+            else if (minutes > 0L) "${minutes}m ${seconds}s"
+            else "${seconds}s"
+        } else {
+            if (hours > 0L) "${hours}小时${minutes}分${seconds}秒"
+            else if (minutes > 0L) "${minutes}分${seconds}秒"
+            else "${seconds}秒"
+        }
     }
 
     private fun currentMessageTime(): String = formatMessageTime(Instant.now().toString())
@@ -9547,12 +10612,42 @@ class MainActivity : Activity() {
     }
 
     private fun isThreadRunning(thread: JSONObject): Boolean {
-        val status = thread.optJSONObject("status")?.optString("type")
-        if (status == "active" || status == "running") return true
-        val turns = thread.optJSONArray("turns") ?: return false
-        val last = turns.optJSONObject(turns.length() - 1) ?: return false
-        val state = last.optString("status").lowercase(Locale.ROOT)
-        return state == "inprogress" || state == "running"
+        val threadId = thread.optString("id")
+        if (pendingLiveTurnIds.containsKey(threadId)) return true
+        val turns = thread.optJSONArray("turns")
+        val last = turns?.optJSONObject(turns.length() - 1)
+        if (last != null) {
+            if (finishedTurnStates.containsKey("$threadId:${last.optString("id")}")) return false
+            return last.optString("status").lowercase(Locale.ROOT) in setOf("inprogress", "running", "active", "started")
+        }
+        return thread.optJSONObject("status")?.optString("type")?.lowercase(Locale.ROOT) in setOf("active", "running", "inprogress", "started")
+    }
+
+    private fun rememberFinishedTurn(threadId: String, turnId: String, turn: JSONObject) {
+        finishedTurnStates["$threadId:$turnId"] = JSONObject().put("status", turn.optString("status").ifBlank { "completed" })
+            .put("completedAt", turn.opt("completedAt"))
+        if (pendingLiveTurnIds[threadId] == turnId) pendingLiveTurnIds.remove(threadId)
+        while (finishedTurnStates.size > 2048) finishedTurnStates.remove(finishedTurnStates.keys.first())
+    }
+
+    private fun reconcileLiveHistory(thread: JSONObject): Boolean {
+        val threadId = thread.optString("id")
+        val turns = thread.optJSONArray("turns") ?: JSONArray()
+        val waitingFor = pendingLiveTurnIds[threadId]
+        if (waitingFor != null && (0 until turns.length()).none { turns.optJSONObject(it)?.optString("id") == waitingFor }) return false
+        if (waitingFor != null) pendingLiveTurnIds.remove(threadId)
+        for (index in 0 until turns.length()) {
+            val turn = turns.optJSONObject(index) ?: continue
+            val turnId = turn.optString("id")
+            if (turn.optString("status").lowercase(Locale.ROOT) in setOf("completed", "failed", "interrupted", "cancelled", "canceled")) {
+                rememberFinishedTurn(threadId, turnId, turn)
+            } else finishedTurnStates["$threadId:$turnId"]?.let { completed ->
+                turn.put("status", completed.optString("status"))
+                if (completed.has("completedAt")) turn.put("completedAt", completed.opt("completedAt"))
+            }
+        }
+        turns.optJSONObject(turns.length() - 1)?.let { thread.put("status", JSONObject().put("type", it.optString("status"))) }
+        return true
     }
 
     private fun normalizedType(value: String) = value.replace("-", "").replace("_", "").lowercase(Locale.ROOT)
@@ -9579,10 +10674,9 @@ class MainActivity : Activity() {
                     clipToOutline = true
                     isClickable = true
                     setOnClickListener {
-                        val full = runCatching {
-                            decodeSampledBitmap(android.util.Base64.decode(file.optString("data"), android.util.Base64.DEFAULT), 2048)
-                        }.getOrNull()
-                        if (full != null) showImageDialog(full)
+                        showImageDialogWhileLoading(bitmap) {
+                            decodeBase64Image(file.optString("data"), fullImagePreviewMaximumDimension())
+                        }
                     }
                 }
                 frame.addView(image, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.BOTTOM or Gravity.START))
@@ -10068,6 +11162,7 @@ class MainActivity : Activity() {
         "chevron_down" -> R.drawable.ic_chevron_down
         "chevron_up" -> R.drawable.ic_chevron_up
         "chevron_right" -> R.drawable.ic_chevron_right
+        "stop" -> R.drawable.ic_stop
         "back" -> R.drawable.ic_back
         else -> R.drawable.ic_add
         }
@@ -10366,6 +11461,7 @@ class MainActivity : Activity() {
         private const val TAG_MESSAGE_TURN_PREFIX = "message_turn:"
         private const val TAG_MESSAGE_DYNAMIC = "message_dynamic"
         private const val DEFAULT_VISIBLE_HISTORY_TURNS = 12
+        private const val OPERATION_LOG_PAGE_SIZE = 50
         private const val MAX_VISIBLE_SIDEBAR_THREADS = 80
         private val OPERATION_PATH_KEYS = setOf(
             "path", "filepath", "file_path", "filename", "target_path", "source_path", "imagepath", "image_path",
@@ -10377,6 +11473,8 @@ class MainActivity : Activity() {
         private val SKILL_TOOL_PATTERN = Regex("skill", RegexOption.IGNORE_CASE)
         private val CONTROL_CHARACTER_PATTERN = Regex("[\\u0000-\\u001f\\u007f]+")
         private val WHITESPACE_PATTERN = Regex("\\s+")
+        private val USER_DOCUMENT_ATTACHMENT_PATTERN = Regex("""\[附件文档：([^\r\n]+)\]\r?\n([\s\S]*?)\r?\n\[/附件文档\]""")
+        private val USER_MESSAGE_EXTRA_NEWLINES_PATTERN = Regex("\n{3,}")
         private const val MAX_CACHED_THREADS = 32
         private const val MAX_EAGER_HISTORY_CACHE_BYTES = 1024L * 1024L
         private const val MAX_SINGLE_HISTORY_CACHE_BYTES = 24L * 1024 * 1024
@@ -10387,25 +11485,264 @@ class MainActivity : Activity() {
         private const val PIXEL_TEXT_RASTER_SCALE = 0.5f
         private const val MAX_INLINE_IMAGE_BASE64_CHARS = 12 * 1024 * 1024
         private const val MAX_FILE_PREVIEW_BASE64_CHARS = 12 * 1024 * 1024
+        private const val MESSAGE_IMAGE_THUMBNAIL_MAX_DIMENSION = 720
+        private const val MAX_FULL_IMAGE_PREVIEW_DIMENSION = 2400
+        private const val FILE_PREVIEW_SINGLE_PAGE_MAX_LINES = 600
+        private const val FILE_PREVIEW_SINGLE_PAGE_MAX_CHARS = 96 * 1024
+        private const val FILE_PREVIEW_PAGE_MAX_LINES = 300
+        private const val FILE_PREVIEW_PAGE_MAX_CHARS = 48 * 1024
         private const val MAX_DIFF_PREVIEW_LINES = 2500
     }
 }
 
-private class TerminalScreenBuffer(private val columns: Int, private val rows: Int) {
-    private val screen = MutableList(rows) { CharArray(columns) { ' ' } }
+private class TerminalOutputView(context: Context) : TextView(context) {
+    private var cursorRow = -1
+    private var cursorColumn = -1
+    private var cursorOn = true
+    private val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val blink = object : Runnable {
+        override fun run() {
+            if (cursorRow < 0 || !isAttachedToWindow) return
+            cursorOn = !cursorOn
+            invalidate()
+            postDelayed(this, 550L)
+        }
+    }
+
+    fun updateCursor(position: Pair<Int, Int>?) {
+        val nextRow = position?.first ?: -1
+        val nextColumn = position?.second ?: -1
+        if (nextRow == cursorRow && nextColumn == cursorColumn) return
+        cursorRow = nextRow
+        cursorColumn = nextColumn
+        cursorOn = true
+        removeCallbacks(blink)
+        if (cursorRow >= 0 && isAttachedToWindow) postDelayed(blink, 550L)
+        invalidate()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (cursorRow >= 0) postDelayed(blink, 550L)
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(blink)
+        super.onDetachedFromWindow()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (!cursorOn || cursorRow < 0) return
+        val textLayout = layout ?: return
+        if (cursorRow >= textLayout.lineCount) return
+        val start = textLayout.getLineStart(cursorRow)
+        val end = textLayout.getLineEnd(cursorRow)
+        val contentEnd = if (end > start && text[end - 1] == '\n') end - 1 else end
+        val textColumn = cursorColumn.coerceAtMost(contentEnd - start)
+        val density = resources.displayMetrics.density
+        val cursorWidth = density * 2.5f
+        val x = (compoundPaddingLeft + textLayout.getPrimaryHorizontal(start + textColumn) +
+            (cursorColumn - textColumn) * paint.measureText(" "))
+            .coerceAtMost(width - compoundPaddingRight - cursorWidth)
+        val top = compoundPaddingTop + textLayout.getLineTop(cursorRow) + density * 2f
+        val bottom = compoundPaddingTop + textLayout.getLineBottom(cursorRow) - density * 2f
+        if (bottom <= top) return
+        cursorPaint.color = currentTextColor
+        canvas.drawRoundRect(x, top, x + cursorWidth, bottom, density, density, cursorPaint)
+    }
+}
+
+private class TerminalInputSink(
+    context: Context,
+    private val sendInput: (String) -> Boolean,
+) : EditText(context) {
+    var hasActiveComposition = false
+        private set
+
+    init {
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or EditorInfo.IME_ACTION_GO
+        isSingleLine = true
+        isFocusable = true
+        isFocusableInTouchMode = true
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        showSoftInputOnFocus = true
+        isCursorVisible = false
+        setTextColor(Color.TRANSPARENT)
+        setPadding(0, 0, 0, 0)
+        background = ColorDrawable(Color.TRANSPARENT)
+    }
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val base = super.onCreateInputConnection(outAttrs) ?: return null
+        outAttrs.inputType = inputType
+        outAttrs.imeOptions = imeOptions
+        return object : InputConnectionWrapper(base, false) {
+            private var composingText = ""
+
+            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                val handled = super.setComposingText(text, newCursorPosition)
+                composingText = text?.toString().orEmpty()
+                hasActiveComposition = composingText.isNotEmpty()
+                return handled
+            }
+
+            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                val committed = text?.toString().orEmpty()
+                val handled = super.commitText(text, newCursorPosition)
+                if (committed.isNotEmpty()) {
+                    val terminalText = committed.replace("\r\n", "\n").replace('\n', '\r')
+                    sendInput(terminalText)
+                    super.deleteSurroundingText(committed.length, 0)
+                }
+                composingText = ""
+                hasActiveComposition = false
+                return handled
+            }
+
+            override fun finishComposingText(): Boolean {
+                val pending = composingText
+                val handled = super.finishComposingText()
+                if (pending.isNotEmpty()) {
+                    sendInput(pending.replace("\r\n", "\n").replace('\n', '\r'))
+                    super.deleteSurroundingText(pending.length, 0)
+                }
+                composingText = ""
+                hasActiveComposition = false
+                return handled
+            }
+
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                if (composingText.isNotEmpty()) {
+                    val handled = super.deleteSurroundingText(beforeLength, afterLength)
+                    composingText = super.getTextBeforeCursor(4096, 0)?.toString().orEmpty()
+                    return handled
+                }
+                if (beforeLength > 0) sendInput("\u007f".repeat(beforeLength.coerceAtMost(64)))
+                if (afterLength > 0) sendInput("\u001b[3~".repeat(afterLength.coerceAtMost(64)))
+                return true
+            }
+
+            override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+                if (composingText.isNotEmpty()) {
+                    val handled = super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
+                    composingText = super.getTextBeforeCursor(4096, 0)?.toString().orEmpty()
+                    return handled
+                }
+                if (beforeLength > 0) sendInput("\u007f".repeat(beforeLength.coerceAtMost(64)))
+                if (afterLength > 0) sendInput("\u001b[3~".repeat(afterLength.coerceAtMost(64)))
+                return true
+            }
+
+            override fun sendKeyEvent(event: KeyEvent): Boolean {
+                val sequence = terminalSequenceForKey(event) ?: return super.sendKeyEvent(event)
+                if (event.action == KeyEvent.ACTION_DOWN) sendInput(sequence)
+                return true
+            }
+
+            override fun performEditorAction(actionCode: Int): Boolean {
+                if (actionCode == EditorInfo.IME_ACTION_GO || actionCode == EditorInfo.IME_ACTION_SEND ||
+                    actionCode == EditorInfo.IME_ACTION_DONE
+                ) {
+                    sendInput("\r")
+                    return true
+                }
+                return super.performEditorAction(actionCode)
+            }
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val sequence = terminalSequenceForKey(event) ?: return super.onKeyDown(keyCode, event)
+        sendInput(sequence)
+        return true
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean =
+        if (terminalSequenceForKey(event) != null) true else super.onKeyUp(keyCode, event)
+}
+
+private fun terminalSequenceForKey(event: KeyEvent): String? {
+    if (event.isCtrlPressed && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
+        return (event.keyCode - KeyEvent.KEYCODE_A + 1).toChar().toString()
+    }
+    return when (event.keyCode) {
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "\r"
+        KeyEvent.KEYCODE_DEL -> if (event.isCtrlPressed) "\u0017" else "\u007f"
+        KeyEvent.KEYCODE_FORWARD_DEL -> "\u001b[3~"
+        KeyEvent.KEYCODE_TAB -> "\t"
+        KeyEvent.KEYCODE_ESCAPE -> "\u001b"
+        KeyEvent.KEYCODE_DPAD_UP -> "\u001b[A"
+        KeyEvent.KEYCODE_DPAD_DOWN -> "\u001b[B"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "\u001b[C"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "\u001b[D"
+        KeyEvent.KEYCODE_MOVE_HOME -> "\u001b[H"
+        KeyEvent.KEYCODE_MOVE_END -> "\u001b[F"
+        KeyEvent.KEYCODE_PAGE_UP -> "\u001b[5~"
+        KeyEvent.KEYCODE_PAGE_DOWN -> "\u001b[6~"
+        else -> {
+            val codePoint = event.unicodeChar
+            if (!Character.isValidCodePoint(codePoint) || codePoint == 0) null else String(Character.toChars(codePoint))
+        }
+    }
+}
+
+private class TerminalScreenBuffer(private var columns: Int, private var rows: Int) {
+    val columnCount: Int get() = columns
+    val rowCount: Int get() = rows
+    private var screen = MutableList(rows) { CharArray(columns) { ' ' } }
     private var cursorRow = 0
     private var cursorColumn = 0
     private var savedRow = 0
     private var savedColumn = 0
+    private var scrollTop = 0
+    private var scrollBottom = rows - 1
     private var state = 0
+    private var receivedOutput = false
+    private var cursorVisible = true
     private val sequence = StringBuilder()
 
-    fun append(value: String): String {
+    fun append(value: String) {
+        if (value.isNotEmpty()) receivedOutput = true
         value.forEach(::consume)
-        val rendered = screen.map { String(it).trimEnd() }
-        val first = rendered.indexOfFirst { it.isNotBlank() }
-        val last = rendered.indexOfLast { it.isNotBlank() }
-        return if (first < 0 || last < first) "等待终端输出…" else rendered.subList(first, last + 1).joinToString("\n")
+    }
+
+    fun render(hideStatusLine: Boolean = false): String =
+        if (!receivedOutput && screen.all { line -> line.all { it == ' ' } }) "等待终端输出…"
+        else screen.take(if (hideStatusLine) rows - 1 else rows).joinToString("\n") { line ->
+            val text = String(line).trimEnd()
+            if (hideStatusLine && text.startsWith("[codex-rem")) "" else text
+        }
+
+    fun cursorPosition(hideStatusLine: Boolean = false): Pair<Int, Int>? =
+        if (!receivedOutput || !cursorVisible || hideStatusLine && cursorRow >= rows - 1) null
+        else cursorRow to cursorColumn.coerceIn(0, columns - 1)
+
+    fun prepareForReconnect() {
+        state = 0
+        sequence.setLength(0)
+    }
+
+    fun resize(newColumns: Int, newRows: Int) {
+        if (newColumns == columns && newRows == rows) return
+        val next = MutableList(newRows) { CharArray(newColumns) { ' ' } }
+        val contentRows = minOf(rows - 1, newRows - 1)
+        val maxSourceStart = (rows - 1 - contentRows).coerceAtLeast(0)
+        val sourceStart = (cursorRow.coerceAtMost(rows - 2) - contentRows + 1).coerceIn(0, maxSourceStart)
+        val copyColumns = minOf(columns, newColumns)
+        for (row in 0 until contentRows) screen[sourceStart + row].copyInto(next[row], endIndex = copyColumns)
+        screen[rows - 1].copyInto(next[newRows - 1], endIndex = copyColumns)
+        cursorRow = if (cursorRow == rows - 1) newRows - 1 else (cursorRow - sourceStart).coerceIn(0, newRows - 2)
+        savedRow = if (savedRow == rows - 1) newRows - 1 else (savedRow - sourceStart).coerceIn(0, newRows - 2)
+        cursorColumn = cursorColumn.coerceAtMost(newColumns - 1)
+        savedColumn = savedColumn.coerceAtMost(newColumns - 1)
+        columns = newColumns
+        rows = newRows
+        screen = next
+        scrollTop = 0
+        scrollBottom = rows - 1
     }
 
     private fun consume(character: Char) {
@@ -10424,7 +11761,10 @@ private class TerminalScreenBuffer(private val columns: Int, private val rows: I
                 ']' -> { sequence.setLength(0); state = 3 }
                 '7' -> { savedRow = cursorRow; savedColumn = cursorColumn; state = 0 }
                 '8' -> { cursorRow = savedRow; cursorColumn = savedColumn; state = 0 }
-                'c' -> { clear(); state = 0 }
+                'c' -> { clear(resetCursor = true); state = 0 }
+                'D' -> { newLine(resetColumn = false); state = 0 }
+                'E' -> { newLine(); state = 0 }
+                'M' -> { reverseIndex(); state = 0 }
                 '(', ')', '#', '%' -> state = 4
                 else -> state = 0
             }
@@ -10451,18 +11791,39 @@ private class TerminalScreenBuffer(private val columns: Int, private val rows: I
         cursorColumn += 1
     }
 
-    private fun newLine() {
-        cursorRow += 1
-        cursorColumn = 0
-        if (cursorRow < rows) return
-        screen.removeAt(0)
-        screen.add(CharArray(columns) { ' ' })
-        cursorRow = rows - 1
+    private fun newLine(resetColumn: Boolean = true) {
+        if (cursorRow == scrollBottom) scrollUp(1)
+        else if (cursorRow < rows - 1) cursorRow++
+        else scrollUp(1, 0, rows - 1)
+        if (resetColumn) cursorColumn = 0
+    }
+
+    private fun reverseIndex() {
+        if (cursorRow == scrollTop) scrollDown(1)
+        else cursorRow = (cursorRow - 1).coerceAtLeast(0)
+    }
+
+    private fun scrollUp(count: Int, top: Int = scrollTop, bottom: Int = scrollBottom) {
+        repeat(count.coerceAtMost(bottom - top + 1)) {
+            screen.removeAt(top)
+            screen.add(bottom, CharArray(columns) { ' ' })
+        }
+    }
+
+    private fun scrollDown(count: Int) {
+        repeat(count.coerceAtMost(scrollBottom - scrollTop + 1)) {
+            screen.removeAt(scrollBottom)
+            screen.add(scrollTop, CharArray(columns) { ' ' })
+        }
     }
 
     private fun applyCsi(command: Char, raw: String) {
         val cleaned = raw.trimStart('?', '>', '!', '=')
         val values = cleaned.split(';').map { it.toIntOrNull() ?: 0 }
+        if (raw.startsWith('?') && 25 in values && (command == 'h' || command == 'l')) {
+            cursorVisible = command == 'h'
+            return
+        }
         fun value(index: Int, fallback: Int = 1): Int = values.getOrNull(index)?.takeIf { it > 0 } ?: fallback
         when (command) {
             'A' -> cursorRow = (cursorRow - value(0)).coerceAtLeast(0)
@@ -10482,8 +11843,18 @@ private class TerminalScreenBuffer(private val columns: Int, private val rows: I
             'P' -> deleteCharacters(value(0))
             '@' -> insertCharacters(value(0))
             'X' -> repeat(value(0).coerceAtMost(columns - cursorColumn)) { screen[cursorRow][cursorColumn + it] = ' ' }
-            'S' -> repeat(value(0).coerceAtMost(rows)) { screen.removeAt(0); screen.add(CharArray(columns) { ' ' }) }
-            'T' -> repeat(value(0).coerceAtMost(rows)) { screen.removeAt(rows - 1); screen.add(0, CharArray(columns) { ' ' }) }
+            'S' -> scrollUp(value(0))
+            'T' -> scrollDown(value(0))
+            'r' -> {
+                val top = value(0)
+                val bottom = value(1, rows)
+                if (top < bottom && bottom <= rows) {
+                    scrollTop = top - 1
+                    scrollBottom = bottom - 1
+                    cursorRow = 0
+                    cursorColumn = 0
+                }
+            }
             's' -> { savedRow = cursorRow; savedColumn = cursorColumn }
             'u' -> { cursorRow = savedRow; cursorColumn = savedColumn }
         }
@@ -10495,7 +11866,7 @@ private class TerminalScreenBuffer(private val columns: Int, private val rows: I
                 for (row in 0 until cursorRow) screen[row].fill(' ')
                 for (column in 0..cursorColumn.coerceAtMost(columns - 1)) screen[cursorRow][column] = ' '
             }
-            2, 3 -> clear()
+            2, 3 -> screen.forEach { it.fill(' ') }
             else -> {
                 for (column in cursorColumn until columns) screen[cursorRow][column] = ' '
                 for (row in cursorRow + 1 until rows) screen[row].fill(' ')
@@ -10525,10 +11896,15 @@ private class TerminalScreenBuffer(private val columns: Int, private val rows: I
         for (column in cursorColumn until cursorColumn + amount) line[column] = ' '
     }
 
-    private fun clear() {
+    private fun clear(resetCursor: Boolean = false) {
         screen.forEach { it.fill(' ') }
-        cursorRow = 0
-        cursorColumn = 0
+        if (resetCursor) {
+            cursorRow = 0
+            cursorColumn = 0
+            cursorVisible = true
+            scrollTop = 0
+            scrollBottom = rows - 1
+        }
     }
 }
 

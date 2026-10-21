@@ -1,4 +1,5 @@
 import { deleteThreadTransportCache, readThreadTransportCache, writeThreadTransportCache, type ThreadTransportSnapshot } from './threadTransportCache'
+import { eventTimestamp } from './turnTiming'
 
 export interface CodexThread {
   id: string
@@ -15,6 +16,7 @@ export interface CodexThread {
 
 export interface CodexThreadDetails extends CodexThread {
   turns?: unknown[]
+  historyContentRevision?: string
   codexRemoteWorkspaceChanges?: Record<string, unknown>
 }
 
@@ -144,6 +146,7 @@ export interface RemoteEvent {
   heartbeats?: boolean
   id?: string
   threadId?: string
+  revision?: string
   pinned?: boolean
   method?: string
   params?: Record<string, unknown>
@@ -352,7 +355,10 @@ export function userMessageFromEventItem(value: unknown, turnId: string | null):
   const images = imagesFromContent(item.content)
   if (!text && images.length === 0 && documents.length === 0) return null
 
-  const sentAt = parsedTimestamp(item.createdAt ?? item.timestamp ?? item.created_at) ?? new Date().toISOString()
+  const sentAt = parsedTimestampFromFields(
+    item,
+    'createdAt', 'created_at', 'sentAt', 'sent_at', 'timestamp', 'timestampMs', 'timestamp_ms',
+  ) ?? new Date().toISOString()
   return {
     id: `remote-user-${itemId}`,
     sourceItemId: itemId,
@@ -369,12 +375,15 @@ export function userMessageFromEventItem(value: unknown, turnId: string | null):
 }
 
 function parsedTimestamp(value: unknown): string | null {
-  if (typeof value === 'number') {
-    const normalized = value > 10_000_000_000 ? value : value * 1000
-    const date = new Date(normalized)
-    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  const timestamp = eventTimestamp(value)
+  return timestamp === null ? null : new Date(timestamp).toISOString()
+}
+
+function parsedTimestampFromFields(value: Record<string, unknown>, ...fields: string[]) {
+  for (const field of fields) {
+    const timestamp = parsedTimestamp(value[field])
+    if (timestamp) return timestamp
   }
-  if (typeof value === 'string' && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString()
   return null
 }
 
@@ -390,8 +399,8 @@ export function messagesFromThread(thread: CodexThreadDetails): CodexMessage[] {
     const turn = turnValue as Record<string, unknown>
     if (!Array.isArray(turn.items)) continue
     const turnId = typeof turn.id === 'string' ? turn.id : undefined
-    const turnStartedAt = parsedTimestamp(turn.startedAt)
-    const turnCompletedAt = parsedTimestamp(turn.completedAt)
+    const turnStartedAt = parsedTimestampFromFields(turn, 'startedAt', 'started_at', 'startedAtMs', 'started_at_ms', 'createdAt', 'created_at')
+    const turnCompletedAt = parsedTimestampFromFields(turn, 'completedAt', 'completed_at', 'completedAtMs', 'completed_at_ms')
     const replyDurationMs = turnStartedAt && turnCompletedAt
       ? Math.max(0, Date.parse(turnCompletedAt) - Date.parse(turnStartedAt))
       : undefined
@@ -410,7 +419,10 @@ export function messagesFromThread(thread: CodexThreadDetails): CodexMessage[] {
       const documents = [...originalPdfAttachments.documents, ...textDocumentAttachments.documents]
       const images = itemType === 'usermessage' ? imagesFromContent(item.content) : []
       if (!text && images.length === 0 && documents.length === 0) continue
-      const itemCreatedAt = parsedTimestamp(item.createdAt ?? item.timestamp ?? item.created_at)
+      const itemCreatedAt = parsedTimestampFromFields(
+        item,
+        'createdAt', 'created_at', 'sentAt', 'sent_at', 'timestamp', 'timestampMs', 'timestamp_ms',
+      )
       const replyStartedAt = itemType === 'agentmessage' ? turnStartedAt ?? itemCreatedAt : undefined
 
       if (itemType === 'agentmessage' && assistantMessage) {
@@ -424,7 +436,7 @@ export function messagesFromThread(thread: CodexThreadDetails): CodexMessage[] {
         id: typeof item.id === 'string' ? item.id : `${String(turn.id ?? 'turn')}-${messages.length}`,
         role: itemType === 'usermessage' ? 'user' : 'assistant',
         text,
-        createdAt: itemCreatedAt ?? replyStartedAt ?? turnStartedAt ?? timestamp(turn.startedAt),
+        createdAt: itemCreatedAt ?? replyStartedAt ?? turnStartedAt ?? timestamp(turn.startedAt ?? turn.started_at),
         ...(itemType === 'usermessage' ? { sentAt: itemCreatedAt ?? turnStartedAt ?? undefined } : {}),
         ...(replyStartedAt ? { replyStartedAt } : {}),
         ...(itemType === 'agentmessage' && replyDurationMs !== undefined ? { replyDurationMs } : {}),
@@ -577,6 +589,7 @@ async function readThreadWithChanges(token: string, threadId: string, key: strin
   if (thread.id !== threadId) throw new Error('聊天同步返回了不匹配的对话，请刷新后重试。')
   const revision = response.historySync?.revision
   if (typeof revision === 'string' && revision) {
+    thread = { ...thread, historyContentRevision: revision }
     if (revision !== cached?.revision || response.historySync?.baseRevision === undefined) {
       await writeThreadTransportCache(key, { thread, revision })
     }
@@ -618,7 +631,7 @@ export const codexRemoteClient = {
       body: JSON.stringify({ code }),
     }, { timeoutMs: 10_000 }).catch((reason) => {
       if (reason instanceof Error && (reason.name === 'TimeoutError' || reason.name === 'AbortError')) {
-        throw new Error('连接超时，请确认 Codex Remote 服务正在运行后重试。')
+        throw new Error('连接超时，请确认 Code Remote 服务正在运行后重试。')
       }
       throw reason
     })
@@ -868,7 +881,7 @@ export const codexRemoteClient = {
     }, { networkRetries: 3 })
   },
   interrupt(token: string, threadId: string, turnId?: string | null) {
-    return request<{ interrupted: boolean }>(token, `/api/v1/codex/threads/${encodeURIComponent(threadId)}/interrupt`, {
+    return request<{ interrupted: boolean; stale?: boolean }>(token, `/api/v1/codex/threads/${encodeURIComponent(threadId)}/interrupt`, {
       method: 'POST',
       body: JSON.stringify({ turn_id: turnId }),
     })

@@ -59,7 +59,7 @@ function sleep(milliseconds) {
 
 function cleanCodexEnvironment() {
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith('CODEX_') && !['CODEX_HOME', 'CODEX_REMOTE_APP_SERVER_HOME', 'CODEX_REMOTE_COMMAND', 'CODEX_REMOTE_PYTHON', 'CODEX_REMOTE_WORKSPACE', 'CODEX_REMOTE_AUTH_FILE'].includes(key)) {
+    if (key.startsWith('CODEX_') && !['CODEX_HOME', 'CODEX_REMOTE_APP_SERVER_HOME', 'CODEX_REMOTE_COMMAND', 'CODEX_REMOTE_PYTHON', 'CODEX_REMOTE_WORKSPACE', 'CODEX_REMOTE_AUTH_FILE', 'CODEX_REMOTE_STATE_FILE'].includes(key)) {
       delete process.env[key]
     }
   }
@@ -103,7 +103,7 @@ async function waitForEngine() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (await engineReady()) return
     if (engine?.exitCode !== null) {
-      throw new Error('Codex Remote 后端启动失败，请检查上面的 Python/Codex 错误。')
+      throw new Error('Code Remote 后端启动失败，请检查上面的 Python/Codex 错误。')
     }
     await sleep(100)
   }

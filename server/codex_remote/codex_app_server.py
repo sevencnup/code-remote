@@ -23,6 +23,7 @@ from websockets.asyncio.client import connect as websocket_connect
 from .codex_history import CodexHistoryStore
 
 logger = logging.getLogger(__name__)
+_APP_SERVER_MAX_MESSAGE_SIZE = 256 * 1024 * 1024
 
 
 class CodexRuntimeError(RuntimeError):
@@ -482,6 +483,7 @@ class CodexAppServer:
         *,
         include_turns: bool = True,
         tail_turns: int | None = None,
+        compact: bool = False,
     ) -> dict[str, Any]:
         active_before = self._active_turn_ids.get(thread_id)
         history_limit = tail_turns if include_turns else 1
@@ -489,6 +491,7 @@ class CodexAppServer:
             self._history.read_thread,
             thread_id,
             tail_turns=history_limit,
+            **({"compact": True} if compact else {}),
         )
         runtime_turn_id = self._active_turn_ids.get(thread_id)
         thread: dict[str, Any] | None = None
@@ -504,7 +507,7 @@ class CodexAppServer:
                     thread = candidate
             except CodexRuntimeError as error:
                 read_error = error
-        elif (tail_turns is not None or runtime_turn_id is None) and isinstance(history_thread, dict):
+        elif (compact or tail_turns is not None or runtime_turn_id is None) and isinstance(history_thread, dict):
             thread = history_thread
         else:
             try:
@@ -1028,6 +1031,28 @@ class CodexAppServer:
                     raise
             raise
 
+    async def mark_stale_turn_interrupted(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        completed_at: str | int | float | None = None,
+    ) -> None:
+        active_turn_id = self._active_turn_ids.get(thread_id)
+        if active_turn_id and active_turn_id != turn_id:
+            raise CodexRuntimeError("当前回复编号已变化，没有暂停新的回复；请刷新后重试。")
+        self._active_turn_ids.pop(thread_id, None)
+        self._last_completed_turn_ids[thread_id] = turn_id
+        turn: dict[str, Any] = {"id": turn_id, "status": "interrupted"}
+        if completed_at is not None:
+            turn["completedAt"] = completed_at
+        await self._emit({
+            "type": "notification",
+            "method": "turn/completed",
+            "params": {"threadId": thread_id, "turn": turn, "stale": True},
+        })
+        await self.notify_threads_changed()
+
     async def answer_server_request(self, request_id: str | int, decision: str) -> None:
         if decision not in {"accept", "decline", "cancel"}:
             raise CodexRuntimeError("不支持的审批操作")
@@ -1125,8 +1150,8 @@ class CodexAppServer:
                 "stdout": asyncio.subprocess.DEVNULL if self._use_windows_websocket else asyncio.subprocess.PIPE,
                 "stderr": asyncio.subprocess.PIPE,
                 # thread/read returns a whole conversation as one JSONL line.
-                # Keep enough room for large Codex histories; asyncio defaults to 64 KiB.
-                "limit": 64 * 1024 * 1024,
+                # Allow large histories while keeping a finite per-message cap.
+                "limit": _APP_SERVER_MAX_MESSAGE_SIZE,
             }
             if os.name == "nt" and executable.lower().endswith((".cmd", ".bat")):
                 process = await asyncio.create_subprocess_shell(
@@ -1149,7 +1174,7 @@ class CodexAppServer:
             await self._request("initialize", {
                 "clientInfo": {
                     "name": "codex_remote_web",
-                    "title": "Codex Remote Web",
+                    "title": "Code Remote Web",
                     "version": "0.2.0-dev.7",
                 },
                 "capabilities": {
@@ -1192,7 +1217,7 @@ class CodexAppServer:
                     additional_headers={"Authorization": f"Bearer {token}"},
                     proxy=None,
                     open_timeout=0.5,
-                    max_size=64 * 1024 * 1024,
+                    max_size=_APP_SERVER_MAX_MESSAGE_SIZE,
                     compression=None,
                 )
                 self._websocket_server_owned = True
@@ -1346,7 +1371,7 @@ class CodexAppServer:
         try:
             changed = await asyncio.to_thread(self._sync_runtime_thread_to_history, thread_id)
         except Exception as error:
-            logger.warning("Unable to sync Codex Remote thread %s: %s", thread_id, error)
+            logger.warning("Unable to sync Code Remote thread %s: %s", thread_id, error)
             return
         if changed:
             self._history.invalidate()
@@ -1372,7 +1397,7 @@ class CodexAppServer:
         try:
             changed = await asyncio.to_thread(self._sync_runtime_created_history_to_main, source_home)
         except OSError as error:
-            logger.warning("Unable to sync existing Codex Remote history: %s", error)
+            logger.warning("Unable to sync existing Code Remote history: %s", error)
             return
         if changed:
             self._history.invalidate()
@@ -1392,7 +1417,7 @@ class CodexAppServer:
                     indexed = self._sync_runtime_thread_index(source, source_home)
                     changed = copied or indexed or changed
                 except OSError as error:
-                    logger.warning("Unable to sync Codex Remote rollout %s: %s", source, error)
+                    logger.warning("Unable to sync Code Remote rollout %s: %s", source, error)
         return changed
 
     @staticmethod
@@ -1451,7 +1476,7 @@ class CodexAppServer:
                     main_columns = connection.execute("PRAGMA main.table_info(threads)").fetchall()
                     runtime_columns = runtime_connection.execute("PRAGMA table_info(threads)").fetchall()
                     if not main_columns or main_columns != runtime_columns:
-                        logger.warning("Skipping Codex Remote index sync: desktop and runtime schemas differ")
+                        logger.warning("Skipping Code Remote index sync: desktop and runtime schemas differ")
                         return False
                     columns = [column[1] for column in main_columns]
                     if "originator" not in columns or "rollout_path" not in columns or "history_mode" not in columns:
@@ -1476,7 +1501,7 @@ class CodexAppServer:
                     connection.commit()
                     return cursor.rowcount > 0
         except sqlite3.Error as error:
-            logger.warning("Unable to index Codex Remote thread %s in desktop history: %s", thread_id, error)
+            logger.warning("Unable to index Code Remote thread %s in desktop history: %s", thread_id, error)
             return False
 
     @staticmethod
@@ -1745,7 +1770,7 @@ class CodexAppServer:
             }:
                 await self._write({
                     "id": request_id,
-                    "error": {"code": -32601, "message": "This Codex Remote client does not support this request."},
+                    "error": {"code": -32601, "message": "This Code Remote client does not support this request."},
                 })
                 return
             request_params = message.get("params")

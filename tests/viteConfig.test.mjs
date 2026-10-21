@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import { loadConfigFromFile } from 'vite'
 
-test('Vite does not watch Codex Remote runtime state', async () => {
+test('Vite does not watch Code Remote runtime state', async () => {
   const configFile = fileURLToPath(new URL('../vite.config.ts', import.meta.url))
   const loaded = await loadConfigFromFile(
     { command: 'serve', mode: 'development' },

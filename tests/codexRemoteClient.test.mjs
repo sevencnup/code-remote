@@ -3,12 +3,21 @@ import { readFile } from 'node:fs/promises'
 import { afterEach, beforeEach, test } from 'node:test'
 import ts from 'typescript'
 
-const source = await readFile(new URL('../src/lib/codexRemoteClient.ts', import.meta.url), 'utf8')
-const { outputText } = ts.transpileModule(source, {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-})
-const testModule = `${outputText}\n//# sourceURL=codexRemoteClient.ts`
-const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload, userMessageFromEventItem } = await import(`data:text/javascript;base64,${Buffer.from(testModule).toString('base64')}`)
+async function typescriptModuleUrl(url) {
+  const source = await readFile(url, 'utf8')
+  let compiled = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  }).outputText
+  for (const match of [...compiled.matchAll(/from ['"]([^'"]+)['"]/g)]) {
+    const dependency = match[1]
+    const resolved = dependency.startsWith('.')
+      ? await typescriptModuleUrl(new URL(`${dependency}.ts`, url))
+      : import.meta.resolve(dependency)
+    compiled = compiled.replace(match[0], `from '${resolved}'`)
+  }
+  return `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
+}
+const { codexRemoteClient, messagesFromThread, RemoteApiError, threadContainsNewPayload, userMessageFromEventItem } = await import(await typescriptModuleUrl(new URL('../src/lib/codexRemoteClient.ts', import.meta.url)))
 const originalFetch = globalThis.fetch
 const originalWindow = globalThis.window
 const originalWebSocket = globalThis.WebSocket
@@ -148,10 +157,12 @@ test('overlapping panes share list and history reads without retaining stale res
   assert.deepEqual(await first, await second)
   const a = codexRemoteClient.readThread('shared-token', 'thread')
   const b = codexRemoteClient.readThread('shared-token', 'thread')
+  await new Promise((resolve) => setImmediate(resolve))
   assert.equal(attempts.length, 2)
   finish(jsonResponse({ id: 'thread', turns: [] }))
   assert.deepEqual(await a, await b)
   const later = codexRemoteClient.readThread('shared-token', 'thread')
+  await new Promise((resolve) => setImmediate(resolve))
   assert.equal(attempts.length, 3)
   finish(jsonResponse({ id: 'thread', turns: [{ id: 'new-turn' }] }))
   assert.equal((await later).turns[0].id, 'new-turn')
@@ -170,6 +181,24 @@ test('thread subscriptions follow selection and remain compatible with an older 
   client.subscribeThread(null)
   assert.equal(JSON.parse(socket.sent.at(-1)).thread_id, null)
   client.close()
+})
+
+test('metadata-only history deltas retain a stable content revision and all messages', async () => {
+  respondWith(jsonResponse({
+    id: 'delta-thread', historyRevision: '1:100',
+    turns: [{ id: 'turn', status: 'completed', items: [{ id: 'user', type: 'userMessage', content: [{ text: 'hello' }] }] }],
+    historySync: { revision: 'visible-one' },
+  }))
+  const initial = await codexRemoteClient.readThread('delta-token', 'delta-thread')
+  respondWith(jsonResponse({
+    id: 'delta-thread', historyRevision: '2:200', turns: [],
+    historySync: { revision: 'visible-one', baseRevision: 'visible-one', turnIds: ['turn'], itemIds: {}, workspaceTurnIds: [] },
+  }))
+  const next = await codexRemoteClient.readThread('delta-token', 'delta-thread')
+  assert.equal(initial.historyContentRevision, 'visible-one')
+  assert.equal(next.historyContentRevision, initial.historyContentRevision)
+  assert.equal(next.historyRevision, '2:200')
+  assert.deepEqual(next.turns, initial.turns)
 })
 
 function interruptedBody() {
@@ -252,7 +281,7 @@ test('pairing has a bounded timeout and reports it clearly', async () => {
 
   await assert.rejects(
     codexRemoteClient.pair('ABCDEFGH'),
-    /连接超时，请确认 Codex Remote 服务正在运行后重试。/,
+    /连接超时，请确认 Code Remote 服务正在运行后重试。/,
   )
   assert.equal(attempts.length, 1)
   assert.ok(attempts[0].init.signal instanceof AbortSignal)
