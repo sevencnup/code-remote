@@ -3,7 +3,13 @@ import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import ts from 'typescript'
 
-const source = await readFile(new URL('../src/lib/composerImageDrafts.ts', import.meta.url), 'utf8')
+const imageRulesSource = await readFile(new URL('../src/lib/imageAttachmentRules.ts', import.meta.url), 'utf8')
+const imageRulesCompiled = ts.transpileModule(imageRulesSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+}).outputText
+const imageRulesUrl = `data:text/javascript;base64,${Buffer.from(imageRulesCompiled).toString('base64')}`
+const source = (await readFile(new URL('../src/lib/composerImageDrafts.ts', import.meta.url), 'utf8'))
+  .replace("from './imageAttachmentRules'", `from '${imageRulesUrl}'`)
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText

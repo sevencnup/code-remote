@@ -25,7 +25,7 @@ test('stream updates keep the composer send callback stable', () => {
 
 test('running file changes reserve a matching slot across open panes', () => {
   assert.ok(page.includes('remote.fileChangesByTurn[remote.runningTurnId]?.some((change) => change.changes.length > 0)'))
-  assert.ok(page.includes('reserveFileChangeSummarySpace={!deviceChatMode && openPaneIndexes.length > 1 && Boolean(hasRunningFileChangesInOpenPanes)}'))
+  assert.ok(page.includes('reserveFileChangeSummarySpace={openPaneIndexes.length > 1 && Boolean(hasRunningFileChangesInOpenPanes)}'))
   assert.ok(page.includes('className="composer-file-change-summary composer-file-change-summary--placeholder"'))
   assert.ok(page.includes('reserveFileChangeSummarySpace && !mobileLayout'))
   assert.ok(styles.includes('.composer-file-change-summary--placeholder { visibility: hidden; pointer-events: none; }'))

@@ -59,7 +59,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .app-recovery__actions button:first-child { border-color: rgba(159, 177, 255, .48); background: #586aa4; color: #fff; }
 .app-recovery__actions button:hover { border-color: rgba(185, 198, 255, .72); background: #657abc; color: #fff; }
 .remote-shell { --line: rgba(146, 157, 184, .16); --muted: #858b95; --panel: #15171c; --panel-raised: #1a1d24; --accent: #aabaff; --pane-marquee-color: #f5f5f1; position: relative; isolation: isolate; display: grid; width: 100%; height: var(--app-viewport-height); min-height: var(--app-viewport-height); grid-template-columns: clamp(180px, 22vw, 284px) minmax(0, 1fr) 8px var(--workspace-explorer-width, 340px); grid-template-rows: minmax(0, 1fr); overflow: hidden; overscroll-behavior: none; background: #101114; color: #e9ebef; }
-.remote-shell--device-chat .remote-sidebar__collapse { display: none; }
 .remote-shell--android { padding-top: var(--native-status-bar-inset); }
 .remote-sidebar { --sidebar-selection-border: #8296ce; --sidebar-selection-bg: rgba(107, 128, 185, .2); z-index: 2; display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; padding: 12px 12px 12px; border-right: 1px solid var(--line); background: linear-gradient(180deg, #15171b 0%, #121316 100%); }
 .remote-sidebar__heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 38px; margin: 0 2px 10px; }
@@ -793,6 +792,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .file-change-card--reviewing .file-change-card__file-row { position: sticky; z-index: 4; top: 60px; background: var(--file-change-row); box-shadow: 0 1px 0 var(--file-change-divider); }
 .file-change-card__path-mobile { display: none; min-width: 0; flex: 1; overflow: hidden; padding: 0; border: 0; background: transparent; color: var(--file-change-copy); cursor: pointer; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; font-family: inherit; font-size: calc(12px + var(--mobile-font-offset)); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .file-change-card__path-desktop { overflow: hidden; min-width: 0; flex: 1; padding: 0; border: 0; background: transparent; color: var(--file-change-copy); cursor: pointer; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; font-family: inherit; font-size: calc(12px + var(--mobile-font-offset)); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.file-change-card__path-readonly { min-width: 0; flex: 1; overflow: hidden; color: var(--file-change-copy); font-size: calc(12px + var(--mobile-font-offset)); text-overflow: ellipsis; white-space: nowrap; }
 .file-change-card__path-desktop:hover { color: var(--file-change-control-hover-text); text-decoration: underline; text-underline-offset: 2px; }
 .file-change-card__insert { display: inline-flex; min-height: 26px; flex: 0 0 auto; align-items: center; justify-content: center; gap: 4px; padding: 0 8px; border: 1px solid var(--file-change-control-border); border-radius: 7px; background: var(--file-change-control); color: var(--file-change-copy); cursor: pointer; font-size: calc(11px + var(--mobile-font-offset)); white-space: nowrap; }
 .file-change-card__insert:hover { border-color: var(--file-change-control-hover-border); background: var(--file-change-control-hover); color: var(--file-change-control-hover-text); }
@@ -3844,7 +3844,4 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 ) { background-position: center; background-repeat: no-repeat; background-size: contain; color: transparent !important; stroke: transparent !important; }
 
 @media (min-width: 701px) {
-  .remote-shell--theme-retro.remote-shell--device-chat .remote-sidebar { display: flex; }
-  .remote-shell--theme-retro.remote-shell--device-chat .remote-workspace { width: 100%; margin: 0; }
-  .remote-shell--theme-retro.remote-shell--device-chat .message-stream__content { display: flex; min-height: 100%; flex-direction: column; gap: 14px; padding: 18px 0 0; }
 }
