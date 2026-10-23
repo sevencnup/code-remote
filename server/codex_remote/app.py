@@ -20,6 +20,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -28,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from watchfiles import awatch
 
 from .browser_history_sync import BrowserHistorySync
@@ -312,6 +313,7 @@ class QueuedMessageRequest(BaseModel):
     images: list[QueuedImage] = Field(default_factory=list, max_length=MAX_IMAGES_PER_TURN)
     documents: list[QueuedDocument] = Field(default_factory=list, max_length=MAX_PDF_ATTACHMENTS_PER_TURN)
     createdAt: str = Field(min_length=1, max_length=128)
+    scheduledAt: str | None = Field(default=None, max_length=64)
     model: str | None = Field(default=None, max_length=200)
     effort: str | None = Field(default=None, max_length=50)
     approvalPolicy: ApprovalPolicy | None = None
@@ -319,6 +321,19 @@ class QueuedMessageRequest(BaseModel):
     claudeEffort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     claudePermissionMode: Literal["default", "manual", "acceptEdits", "auto", "dontAsk", "plan"] | None = None
     sendAttempt: dict[str, Any] | None = None
+
+    @field_validator("scheduledAt")
+    @classmethod
+    def validate_scheduled_at(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("定时发送时间格式无效。") from error
+        if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+            raise ValueError("定时发送时间必须是带时区的未来时间。")
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class QueueMessageIdRequest(BaseModel):
@@ -929,9 +944,6 @@ def codex_viewed_image_preview(
 
 
 def _image_preview_payload(base: Path, candidate: Path, managed_image_root: Path | None) -> dict[str, str | int]:
-    media_type = IMAGE_MEDIA_TYPES.get(candidate.suffix.lower())
-    if media_type is None:
-        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="仅支持 PNG、JPEG、WebP 和 GIF 图片")
     if managed_image_root is not None and is_expired_managed_message_image(candidate, managed_image_root):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="图片已过期")
     try:
@@ -948,13 +960,8 @@ def _image_preview_payload(base: Path, candidate: Path, managed_image_root: Path
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无法读取该图片") from error
     if len(content) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="图片超过 8 MB，暂不支持预览")
-    signatures = {
-        "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
-        "image/jpeg": content.startswith(b"\xff\xd8\xff"),
-        "image/webp": len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP",
-        "image/gif": content.startswith((b"GIF87a", b"GIF89a")),
-    }
-    if not signatures.get(media_type, False):
+    media_type = detect_image_media_type(content)
+    if media_type is None:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="文件内容不是有效的受支持图片")
     return {
         "path": candidate.relative_to(base).as_posix() if candidate.is_relative_to(base) else candidate.name,
@@ -962,6 +969,27 @@ def _image_preview_payload(base: Path, candidate: Path, managed_image_root: Path
         "data": base64.b64encode(content).decode("ascii"),
         "size": len(content),
     }
+
+
+def detect_image_media_type(content: bytes) -> str | None:
+    """Identify preview image bytes independently of a possibly stale filename suffix."""
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(content) >= 12 and content[4:8] == b"ftyp":
+        brands = {content[index:index + 4] for index in range(8, min(len(content), 64), 4)}
+        if brands & {b"avif", b"avis"}:
+            return "image/avif"
+        if brands & {b"heic", b"heix", b"hevc", b"hevx"}:
+            return "image/heic"
+        if brands & {b"mif1", b"msf1"}:
+            return "image/heif"
+    return None
 
 
 def workspace_file_save(base: Path, relative_path: str, content: str, expected_revision: str) -> dict[str, str | int | bool]:
@@ -1982,6 +2010,20 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     async def enqueue_message(thread_id: str, body: QueuedMessageRequest) -> dict[str, Any]:
         if not body.requestText.strip() and not body.images and not body.documents:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="排队消息不能为空。")
+        try:
+            inserted = shared_state.enqueue(thread_id, body.model_dump(exclude_none=True))
+        except QueueConflictError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        if inserted:
+            await shared_queue.changed(thread_id)
+        return {"queue": shared_state.queue(thread_id)}
+
+    @app.post("/api/v1/codex/queue/{thread_id}/schedule")
+    async def schedule_message(thread_id: str, body: QueuedMessageRequest) -> dict[str, Any]:
+        if not body.scheduledAt:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="定时发送需要设置发送时间。")
+        if not body.requestText.strip() and not body.images and not body.documents:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="排队消息不能为空。")
         try:
             inserted = shared_state.enqueue(thread_id, body.model_dump(exclude_none=True))
         except QueueConflictError as error:

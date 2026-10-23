@@ -1,5 +1,6 @@
 import { deleteThreadTransportCache, readThreadTransportCache, writeThreadTransportCache, type ThreadTransportSnapshot } from './threadTransportCache'
 import { eventTimestamp } from './turnTiming'
+import { parseStructuredAssistantQuestions, type MessageChoiceGroup } from './messageChoices'
 
 export interface CodexThread {
   id: string
@@ -60,6 +61,12 @@ export interface CodexMessage {
   images?: CodexMessageImage[]
   documents?: CodexMessageDocument[]
   streaming?: boolean
+  /** Prefix whose agentMessage items have completed, even while the turn continues. */
+  completedTextLength?: number
+  questions?: MessageChoiceGroup[]
+  choiceItemId?: string
+  choicePromptText?: string
+  choiceDelivery?: string
 }
 
 export interface CodexImageAttachment {
@@ -75,6 +82,7 @@ export interface CodexQueuedMessage {
   images: CodexImageAttachment[]
   documents?: CodexDocumentAttachment[]
   createdAt: string
+  scheduledAt?: string
   model?: string
   effort?: string
   approvalPolicy?: CodexApprovalPolicy
@@ -410,7 +418,9 @@ export function messagesFromThread(thread: CodexThreadDetails): CodexMessage[] {
       const item = itemValue as Record<string, unknown>
       const itemType = typeof item.type === 'string' ? item.type.replace(/[-_]/g, '').toLowerCase() : ''
       if (itemType !== 'usermessage' && itemType !== 'agentmessage') continue
+      const questions = itemType === 'agentmessage' ? parseStructuredAssistantQuestions(item.questions) : []
       const rawText = itemType === 'usermessage' ? plainText(item.content) : plainText(item.text)
+        || questions.map((group) => [group.question, ...group.options.map((option) => `- ${option}`)].join('\n')).join('\n\n')
       const originalPdfAttachments = itemType === 'usermessage' ? originalPdfAttachmentsFromText(rawText) : { text: rawText, documents: [] }
       const textDocumentAttachments = itemType === 'usermessage'
         ? textDocumentAttachmentsFromText(originalPdfAttachments.text)
@@ -424,11 +434,27 @@ export function messagesFromThread(thread: CodexThreadDetails): CodexMessage[] {
         'createdAt', 'created_at', 'sentAt', 'sent_at', 'timestamp', 'timestampMs', 'timestamp_ms',
       )
       const replyStartedAt = itemType === 'agentmessage' ? turnStartedAt ?? itemCreatedAt : undefined
+      // Stored messages are complete unless the snapshot explicitly includes
+      // a live item (for example, Claude's current partial reply).
+      const itemComplete = !['active', 'inprogress', 'running', 'started', 'streaming'].includes(
+        typeof item.status === 'string' ? item.status.replace(/[-_]/g, '').toLowerCase() : '',
+      )
 
       if (itemType === 'agentmessage' && assistantMessage) {
+        const previousLength = assistantMessage.text.length
         assistantMessage.text = assistantMessage.text
           ? `${assistantMessage.text}\n\n${text}`
           : text
+        if (itemComplete && assistantMessage.completedTextLength === previousLength) {
+          assistantMessage.completedTextLength = assistantMessage.text.length
+        }
+        if (!itemComplete) assistantMessage.streaming = true
+        if (questions.length > 0) {
+          assistantMessage.questions = questions
+          assistantMessage.choiceItemId = typeof item.id === 'string' ? item.id : undefined
+          assistantMessage.choicePromptText = text
+          assistantMessage.choiceDelivery = typeof item.delivery === 'string' ? item.delivery : undefined
+        }
         continue
       }
 
@@ -440,6 +466,14 @@ export function messagesFromThread(thread: CodexThreadDetails): CodexMessage[] {
         ...(itemType === 'usermessage' ? { sentAt: itemCreatedAt ?? turnStartedAt ?? undefined } : {}),
         ...(replyStartedAt ? { replyStartedAt } : {}),
         ...(itemType === 'agentmessage' && replyDurationMs !== undefined ? { replyDurationMs } : {}),
+        ...(itemType === 'agentmessage' ? { completedTextLength: itemComplete ? text.length : 0 } : {}),
+        ...(itemType === 'agentmessage' && !itemComplete ? { streaming: true } : {}),
+        ...(questions.length > 0 ? {
+          questions,
+          choiceItemId: typeof item.id === 'string' ? item.id : undefined,
+          choicePromptText: text,
+          choiceDelivery: typeof item.delivery === 'string' ? item.delivery : undefined,
+        } : {}),
         ...(turnId ? { turnId } : {}),
         ...(images.length > 0 ? { images } : {}),
         ...(documents.length > 0 ? {
@@ -759,6 +793,12 @@ export const codexRemoteClient = {
   },
   enqueueMessage(token: string, threadId: string, message: CodexQueuedMessage) {
     return request<{ queue: CodexQueuedMessage[] }>(token, `/api/v1/codex/queue/${encodeURIComponent(threadId)}/enqueue`, {
+      method: 'POST',
+      body: JSON.stringify(message),
+    }, { networkRetries: 3 })
+  },
+  scheduleMessage(token: string, threadId: string, message: CodexQueuedMessage) {
+    return request<{ queue: CodexQueuedMessage[] }>(token, `/api/v1/codex/queue/${encodeURIComponent(threadId)}/schedule`, {
       method: 'POST',
       body: JSON.stringify(message),
     }, { networkRetries: 3 })

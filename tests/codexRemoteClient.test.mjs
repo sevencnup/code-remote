@@ -391,6 +391,24 @@ test('renders recent Codex history event messages as visible chat bubbles', () =
   ])
 })
 
+test('retains async question choices when later assistant progress joins the same turn', () => {
+  const messages = messagesFromThread({ id: 'thread-one', turns: [{
+    id: 'turn-one',
+    items: [
+      { id: 'call-question', type: 'agentMessage', text: '保留提交还是移除提交？\n- 保留\n- 移除', delivery: 'async', questions: [
+        { title: '保留提交还是移除提交？', options: [{ label: '保留' }, { label: '移除' }] },
+      ] },
+      { id: 'progress-one', type: 'agentMessage', text: '我继续检查 Logo 文件。' },
+    ],
+  }] })
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].choiceItemId, 'call-question')
+  assert.equal(messages[0].choiceDelivery, 'async')
+  assert.equal(messages[0].choicePromptText, '保留提交还是移除提交？\n- 保留\n- 移除')
+  assert.deepEqual(messages[0].questions, [{ question: '保留提交还是移除提交？', options: ['保留', '移除'] }])
+  assert.match(messages[0].text, /我继续检查 Logo 文件/u)
+})
+
 test('renders images from native Codex image_url data URLs in history and live events', () => {
   const dataUrl = 'data:image/png;base64,aGVsbG8='
   const content = [

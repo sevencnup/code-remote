@@ -37,3 +37,16 @@ PATCH: prevent ordinary Chinese text immediately following a bare URL from being
 - `node --test tests/webAssistantMessageLinks.test.mjs tests/themePreferences.test.mjs` passes (18/18).
 - `pnpm build` and `git diff --check` pass.
 - Version `0.45.6-dev.5` and changelog entry added.
+
+## Follow-up — keep Markdown emphasis markers outside bare links
+
+### Classification
+
+PATCH: fix bare URLs in assistant replies that are wrapped in Markdown emphasis and currently remain plain text.
+
+### Design and implementation steps
+
+1. When trimming a bare URL, recognize a trailing emphasis marker only when the matching opening marker is immediately before the URL.
+2. Keep the closing marker in the remaining message text and preserve valid URL characters when no matching Markdown marker exists.
+3. Increment the web patch development version and add a concise changelog entry.
+4. Review the diff and commit the change locally.
