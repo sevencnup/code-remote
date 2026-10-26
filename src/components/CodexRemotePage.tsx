@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { isCompactLandscape, isMobileLayout, mobileLayoutChangedEvent, mobileLayoutMediaQuery } from '../lib/mobileLayout'
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowUp,
   Bell,
   BellOff,
@@ -39,7 +40,6 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Server,
   Scissors,
   Settings2,
   ShieldCheck,
@@ -50,9 +50,10 @@ import {
   X,
 } from 'lucide-react'
 import { useCodexRemote, type CodexActivity, type CodexActivityTimelineEntry, type CodexFileChange, type CodexOperation, type CodexRemoteController, type CodexThreadCompletion, type QueuedMessageSendMode, type QueuedTurnMessage, type SelectThreadOptions } from '../hooks/useCodexRemote'
-import { codexRemoteClient, maxWorkspaceUploadFileSize, messagesFromThread, RemoteApiError, type ClaudeCodePermissionMode, type CodexApprovalPolicy, type CodexDocumentAttachment, type CodexImageAttachment, type CodexMessage, type CodexModel, type CodexThread, type CodexWorkspaceEntry, type CodexWorkspaceFile, type CodexWorkspaceImage, type CodexWorkspaceTree, type MCPApprovalGrant, type SSHHostKeyOffer, type SSHOperation, type SSHServerConfig, type SSHServerInput } from '../lib/codexRemoteClient'
+import { codexRemoteClient, maxWorkspaceUploadFileSize, messagesFromThread, RemoteApiError, type ClaudeCodePermissionMode, type CodexApprovalPolicy, type CodexDocumentAttachment, type CodexImageAttachment, type CodexMessage, type CodexModel, type CodexThread, type CodexWorkspaceEntry, type CodexWorkspaceFile, type CodexWorkspaceImage, type CodexWorkspaceTree, type MCPApprovalGrant } from '../lib/codexRemoteClient'
 import { copyTextAndImagesToClipboard, copyTextToClipboard, embeddedImageFilesFromClipboardHtml } from '../lib/clipboard'
 import { isRunnableScriptPath } from '../lib/terminalPathCommand'
+import { forgetOpenTerminalThread, readOpenTerminalThread, rememberOpenTerminalThread } from '../lib/terminalScreenMemory'
 import { clipboardTableToMarkdown } from '../lib/clipboardTable'
 import { parseMarkdownTableBlock } from '../lib/markdownTableParser.mjs'
 import { splitMessageInlineLinks } from '../lib/messageInlineLinks'
@@ -108,6 +109,7 @@ const connectionLabel = {
 const TerminalDialog = lazy(() => import('./TerminalDialog').then(({ TerminalDialog: component }) => ({ default: component })))
 
 type ChatEngine = 'codex' | 'claude-code'
+type ChoiceReplyDelivery = 'sent' | 'queued' | 'unverified'
 type ComposerHeightMemory = Partial<Record<ChatEngine, { height: number; manuallyResized: boolean }>>
 
 function EngineBrandIcon({ engine, size = 16 }: { engine: ChatEngine; size?: number }) {
@@ -1004,6 +1006,7 @@ interface MessageComposerProps {
   onUpdateQueuedMessage: (messageId: string, input: QueuedMessageEditInput) => boolean | Promise<boolean>
   onEndQueuedEdit: (messageId: string) => void | boolean | Promise<boolean>
   onRemoveQueued: (messageId: string) => void | boolean | Promise<boolean>
+  onMoveQueued: (messageId: string, adjacentMessageId: string, direction: 'up' | 'down') => Promise<boolean>
   onInterrupt: () => void
   onContinue: () => void
   canContinue: boolean
@@ -1059,6 +1062,7 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
   onUpdateQueuedMessage,
   onEndQueuedEdit,
   onRemoveQueued,
+  onMoveQueued,
   onInterrupt,
   onContinue,
   canContinue,
@@ -1091,6 +1095,8 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
   })
   const [queuedMessagesExpanded, setQueuedMessagesExpanded] = useState(false)
   const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null)
+  const [movingQueuedId, setMovingQueuedId] = useState<string | null>(null)
+  const movingQueuedRef = useRef(false)
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<string | null>(null)
   const [editingQueuedPreferences, setEditingQueuedPreferences] = useState<QueuedMessageEditPreferences | null>(null)
   const [openMenu, setOpenMenu] = useState<'model' | 'effort' | 'approval' | null>(null)
@@ -1984,6 +1990,18 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
     }
   }
 
+  async function moveQueuedMessage(messageId: string, adjacentMessageId: string, direction: 'up' | 'down') {
+    if (movingQueuedRef.current) return
+    movingQueuedRef.current = true
+    setMovingQueuedId(messageId)
+    try {
+      await onMoveQueued(messageId, adjacentMessageId, direction)
+    } finally {
+      movingQueuedRef.current = false
+      setMovingQueuedId(null)
+    }
+  }
+
   function handleInputKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Enter is commonly used to confirm Chinese/Japanese/Korean IME candidates.
     if (inputIsComposing.current || event.nativeEvent.isComposing || event.keyCode === 229) return
@@ -2195,7 +2213,12 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
               const isEditing = editingQueuedMessageId === message.id
               const isSubmitting = message.deliveryState === 'submitting'
               const deliveryUnverified = Boolean(message.sendAttempt)
-              const queueLocked = Boolean(editingQueuedMessageId) || Boolean(sendingQueuedId)
+              const queueLocked = Boolean(editingQueuedMessageId) || Boolean(sendingQueuedId) || Boolean(movingQueuedId)
+              const previousMessage = queuedMessages[index - 1]
+              const nextMessage = queuedMessages[index + 1]
+              const canReorder = (item: QueuedTurnMessage | undefined) => item?.deliveryState === 'pending' && !item.editing && !item.sendAttempt
+              const canMoveUp = !queueLocked && canReorder(message) && canReorder(previousMessage)
+              const canMoveDown = !queueLocked && canReorder(message) && canReorder(nextMessage)
               const queuedModel = showCodexPreferences ? message.model : message.claudeModel
               const queuedEffort = showCodexPreferences ? message.effort : message.claudeEffort
               const queuedModelLabel = (showCodexPreferences ? modelOptions : claudeModelOptions).find((option) => option.value === queuedModel)?.label ?? queuedModel
@@ -2226,6 +2249,10 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
                 <div className={`composer-queue__item${isEditing ? ' composer-queue__item--editing' : ''}`} key={message.id}>
                   <span className="composer-queue__index">{index + 1}</span>
                   <span className="composer-queue__copy"><strong>{summary}</strong><small>{queuedPreferencesLabel ? `${queuedPreferencesLabel} · ` : ''}{queueStatus}</small>{message.images.length > 0 ? <span className="composer-queue__images">{message.images.map((image, imageIndex) => <ImagePreviewButton key={`${image.name}-${imageIndex}`} className="composer-queue__image" src={`data:${image.mediaType};base64,${image.data}`} name={image.name} />)}</span> : null}</span>
+                  <span className="composer-queue__order" role="group" aria-label={`调整第 ${index + 1} 条发送顺序`}>
+                    <button className="composer-queue__move" type="button" disabled={!canMoveUp} onClick={() => previousMessage && void moveQueuedMessage(message.id, previousMessage.id, 'up')} aria-label={`上移第 ${index + 1} 条排队消息`} title="上移一位"><ArrowUp size={14} /></button>
+                    <button className="composer-queue__move" type="button" disabled={!canMoveDown} onClick={() => nextMessage && void moveQueuedMessage(message.id, nextMessage.id, 'down')} aria-label={`下移第 ${index + 1} 条排队消息`} title="下移一位"><ArrowDown size={14} /></button>
+                  </span>
                   <button className="composer-queue__edit" type="button" disabled={queueLocked || isSubmitting || deliveryUnverified} onClick={() => message.editing ? void onEndQueuedEdit(message.id) : void beginQueuedEdit(message)} title={isSubmitting ? '消息正在提交，请稍候' : deliveryUnverified ? '请先核对这条消息是否已发送' : message.editing ? '解除其它设备的编辑暂停' : '在输入框中编辑排队消息'}>
                     <Pencil size={14} /><span>{isEditing ? '编辑中' : message.editing ? '解除编辑' : '编辑'}</span>
                   </button>
@@ -2505,6 +2532,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
   const [loadingPaths, setLoadingPaths] = useState<Record<string, boolean>>({})
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
   const [contextMenu, setContextMenu] = useState<WorkspaceEntryContextMenu | null>(null)
+  const downloadInProgress = useRef(false)
   const [selectionContextMenu, setSelectionContextMenu] = useState<WorkspaceSelectionContextMenu | null>(null)
   const selectionContextMenuElement = useRef<HTMLDivElement>(null)
   const contextMenuElement = useRef<HTMLDivElement>(null)
@@ -2916,8 +2944,8 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
     event.currentTarget.focus({ preventScroll: true })
     const menuWidth = Math.min(theme === 'retro' ? 292 : 244, Math.max(0, window.innerWidth - 16))
     const menuHeight = theme === 'retro'
-      ? Math.min(entry.kind === 'directory' ? 480 : 320, Math.max(0, window.innerHeight - 16))
-      : entry.kind === 'directory' ? 390 : 264
+      ? Math.min(entry.kind === 'directory' ? 480 : 352, Math.max(0, window.innerHeight - 16))
+      : entry.kind === 'directory' ? 390 : 296
     const x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8))
     const y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8))
     const paths = selectedPaths.includes(entry.path) ? selectedPaths : [entry.path]
@@ -2973,6 +3001,29 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
     setMutationDialog({ action: 'delete', paths: contextMenu.paths })
     setMutationError(null)
     setContextMenu(null)
+  }
+
+  async function downloadWorkspaceFile() {
+    const menu = contextMenu
+    if (!menu || menu.entry.kind !== 'file' || menu.paths.length !== 1 || !browsingRoot || downloadInProgress.current) return
+    downloadInProgress.current = true
+    setContextMenu(null)
+    setError(null)
+    try {
+      const { url } = await codexRemoteClient.prepareWorkspaceDownload(token, browsingRoot, menu.entry.path)
+      if (!url.startsWith('/api/v1/codex/workspace/download/')) throw new Error('下载地址无效')
+      const link = document.createElement('a')
+      link.href = url
+      link.download = menu.entry.name
+      link.hidden = true
+      document.body.append(link)
+      link.click()
+      link.remove()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '文件下载失败')
+    } finally {
+      downloadInProgress.current = false
+    }
   }
 
   function closeWorkspaceMutation() {
@@ -3379,11 +3430,12 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
   const contextMenuCanRename = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length === 1)
   const contextMenuCanCopy = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
   const contextMenuCanCut = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
+  const contextMenuCanDownload = Boolean(contextMenu && contextMenu.entry.kind === 'file' && contextMenu.paths.length === 1)
   const contextMenuCanPaste = Boolean(contextMenu && contextMenu.entry.kind === 'directory' && workspaceClipboard)
   const contextMenuCanUpload = contextMenu?.entry.kind === 'directory'
   const contextMenuCanDelete = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
   const contextMenuHasQuickActions = contextMenuCanBind || contextMenuCanOpenTerminal || contextMenuCanRunInTerminal || contextMenuMissingDraftPaths.length > 0
-  const contextMenuHasFileActions = contextMenuCanRename || contextMenuCanCopy || contextMenuCanCut || contextMenuCanPaste || contextMenuCanUpload
+  const contextMenuHasFileActions = contextMenuCanRename || contextMenuCanCopy || contextMenuCanCut || contextMenuCanDownload || contextMenuCanPaste || contextMenuCanUpload
   const uploadPercent = uploadProgress
     ? uploadProgress.size > 0
       ? Math.min(100, Math.floor(uploadProgress.loaded / uploadProgress.size * 100))
@@ -3571,6 +3623,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
             {contextMenuCanRename ? <button type="button" role="menuitem" onClick={startWorkspaceRename}><Pencil size={14} />重命名</button> : null}
             {contextMenuCanCopy ? <button type="button" role="menuitem" onClick={() => rememberWorkspaceEntries('copy')}><Copy size={14} />复制{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</button> : null}
             {contextMenuCanCut ? <button type="button" role="menuitem" onClick={() => rememberWorkspaceEntries('move')}><Scissors size={14} />剪切{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</button> : null}
+            {contextMenuCanDownload ? <button type="button" role="menuitem" onClick={() => void downloadWorkspaceFile()}><Download size={14} />文件下载</button> : null}
             {contextMenuCanPaste ? <button type="button" role="menuitem" onClick={() => void pasteWorkspaceEntries()}><ClipboardPaste size={14} />粘贴到此处</button> : null}
             {contextMenuCanUpload ? <button type="button" role="menuitem" disabled={Boolean(uploadProgress)} onClick={() => chooseWorkspaceUpload(contextMenu.entry.path)}><Upload size={14} />上传文件</button> : null}
           </div> : null}
@@ -3660,6 +3713,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
 })
 
 interface RemoteChatPaneProps {
+  paneIndex: number
   token: string
   remote: CodexRemoteController
   active: boolean
@@ -3686,6 +3740,7 @@ const emptyFileChanges: CodexFileChange[] = []
 const emptyActivityTimeline: CodexActivityTimelineEntry[] = []
 
 const RemoteChatPane = memo(function RemoteChatPane({
+  paneIndex,
   token,
   remote,
   active,
@@ -3706,7 +3761,11 @@ const RemoteChatPane = memo(function RemoteChatPane({
   copyFeedback,
   onCopy,
 }: RemoteChatPaneProps) {
+  const activeThreadId = remote.activeThread?.id ?? null
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const [terminalMounted, setTerminalMounted] = useState(false)
+  const [terminalMountedThreadId, setTerminalMountedThreadId] = useState<string | null>(null)
+  const terminalRestoreChecked = useRef(false)
   const [terminalDirectoryRequest, setTerminalDirectoryRequest] = useState<WorkspaceTerminalRequest | null>(null)
   const [terminalRunRequest, setTerminalRunRequest] = useState<WorkspaceTerminalRequest | null>(null)
   const [terminalSessionCwd, setTerminalSessionCwd] = useState<string | undefined>()
@@ -3734,10 +3793,18 @@ const RemoteChatPane = memo(function RemoteChatPane({
     if (!active || !currentComposer) return false
     return currentComposer.appendReplyDraft(reply)
   }, [active, composerHandle])
-  const sendChoiceReply = useCallback(async (reply: string, immediately: boolean) => {
+  const sendChoiceReply = useCallback(async (reply: string): Promise<ChoiceReplyDelivery | false> => {
     const target = choiceReplyTarget.current
     if (!active || !target.activeThread) return false
-    return target.sendMessage({ prompt: reply, images: [], documents: [], sendImmediately: immediately })
+    let delivery: ChoiceReplyDelivery = 'sent'
+    const accepted = await target.sendMessage({
+      prompt: reply,
+      images: [],
+      documents: [],
+      sendImmediately: true,
+      onDeliveryStatus: (status) => { delivery = status },
+    })
+    return accepted ? delivery : false
   }, [active])
 
   useEffect(() => {
@@ -3745,6 +3812,8 @@ const RemoteChatPane = memo(function RemoteChatPane({
     handledDirectoryRequestId.current = directoryRequest.id
     onActivate()
     if (directoryRequest.action === 'run') {
+      forgetOpenTerminalThread(paneIndex)
+      setTerminalMountedThreadId(activeThreadId)
       setTerminalRunRequest(directoryRequest)
       setTerminalDirectoryRequest(null)
       setTerminalSessionCwd(workspaceParentPath(directoryRequest.path))
@@ -3753,42 +3822,58 @@ const RemoteChatPane = memo(function RemoteChatPane({
     } else {
       setTerminalDirectoryRequest(directoryRequest)
       if (!terminalOpen) {
+        setTerminalMountedThreadId(activeThreadId)
         setTerminalSessionCwd(undefined)
         setTerminalSessionIsolated(false)
       }
     }
+    setTerminalMounted(true)
     setTerminalOpen(true)
     onDirectoryRequestHandled(directoryRequest.id)
-  }, [active, directoryRequest, onActivate, onDirectoryRequestHandled, terminalOpen])
+  }, [active, activeThreadId, directoryRequest, onActivate, onDirectoryRequestHandled, paneIndex, terminalOpen])
 
-  const activeThreadId = remote.activeThread?.id
+  useEffect(() => {
+    if (!activeThreadId || terminalRestoreChecked.current) return
+    terminalRestoreChecked.current = true
+    if (readOpenTerminalThread(paneIndex) === activeThreadId) {
+      setTerminalMountedThreadId(activeThreadId)
+      setTerminalMounted(true)
+      setTerminalOpen(true)
+    }
+  }, [activeThreadId, paneIndex])
+
+  useEffect(() => {
+    if (terminalOpen && !terminalSessionIsolated && terminalMountedThreadId !== activeThreadId) {
+      setTerminalMountedThreadId(activeThreadId)
+    }
+  }, [activeThreadId, terminalMountedThreadId, terminalOpen, terminalSessionIsolated])
+
+  useEffect(() => {
+    if (terminalOpen && !terminalSessionIsolated && activeThreadId) {
+      rememberOpenTerminalThread(paneIndex, activeThreadId)
+    }
+  }, [activeThreadId, paneIndex, terminalOpen, terminalSessionIsolated])
+
+  const closeTerminal = useCallback(() => {
+    forgetOpenTerminalThread(paneIndex)
+    setTerminalOpen(false)
+  }, [paneIndex])
+  const handleTerminalDirectoryRequestConsumed = useCallback((id: number) => {
+    setTerminalDirectoryRequest((current) => current?.id === id ? null : current)
+  }, [])
+  const handleTerminalRunRequestConsumed = useCallback((id: number) => {
+    setTerminalRunRequest((current) => current?.id === id ? null : current)
+  }, [])
+  const insertTerminalText = useCallback((value: string) => {
+    if (value.length >= longPasteThreshold) {
+      composerHandle.current?.addDocumentAttachment({ name: 'terminal-output.md', content: value }, true)
+    } else {
+      composerHandle.current?.insertDraftAtCursor(value, true)
+    }
+  }, [composerHandle])
   useEffect(() => {
     if (active && remote.approval) approvalModal.current?.focus()
   }, [active, remote.approval?.method, remote.approval?.requestId])
-  const [sshOperations, setSSHOperations] = useState<SSHOperation[]>([])
-  useEffect(() => {
-    if (!activeThreadId) { setSSHOperations([]); return }
-    let cancelled = false
-    const refresh = () => {
-      void codexRemoteClient.sshOperations(token, activeThreadId).then(({ operations }) => {
-        if (!cancelled) setSSHOperations(operations)
-      }).catch(() => { /* Chat remains usable when SSH history is unavailable. */ })
-    }
-    setSSHOperations([])
-    refresh()
-    const timer = remote.isRunning || remote.runningTurnId ? window.setInterval(refresh, 750) : null
-    return () => { cancelled = true; if (timer !== null) window.clearInterval(timer) }
-  }, [activeThreadId, remote.isRunning, remote.runningTurnId, token])
-  const sshOperationsByTurn = useMemo(() => {
-    const grouped = new Map<string, SSHOperation[]>()
-    for (const operation of sshOperations) {
-      const key = operation.turn_id ?? ''
-      const previous = grouped.get(key)
-      if (previous) previous.push(operation)
-      else grouped.set(key, [operation])
-    }
-    return grouped
-  }, [sshOperations])
   const approvalThreadId = typeof remote.approval?.params.threadId === 'string'
     ? remote.approval.params.threadId
     : null
@@ -4023,12 +4108,16 @@ const RemoteChatPane = memo(function RemoteChatPane({
             onClick={(event) => {
               event.stopPropagation()
               if (terminalOpen) {
-                setTerminalOpen(false)
+                closeTerminal()
               } else {
                 onActivate()
-                setTerminalSessionCwd(undefined)
-                setTerminalSessionIsolated(false)
-                setTerminalRunRequest(null)
+                if (!terminalMounted || !terminalSessionIsolated && terminalMountedThreadId !== activeThreadId) {
+                  setTerminalMountedThreadId(activeThreadId)
+                  setTerminalSessionCwd(undefined)
+                  setTerminalSessionIsolated(false)
+                  setTerminalRunRequest(null)
+                }
+                setTerminalMounted(true)
                 setTerminalOpen(true)
               }
             }}
@@ -4073,7 +4162,6 @@ const RemoteChatPane = memo(function RemoteChatPane({
                   message={message}
                   assistantName={activeEngineLabel}
                   operations={operations}
-                  sshOperations={showOperations && message.turnId ? sshOperationsByTurn.get(message.turnId) ?? [] : []}
                   fileChanges={operationFileChanges}
                   activityTimeline={activityTimeline}
                   showOperations={showOperations}
@@ -4087,12 +4175,9 @@ const RemoteChatPane = memo(function RemoteChatPane({
                   onOpenImage={openViewedImagePreview}
                 />
                 {changes?.length ? <FileChangeCard changes={changes} onInsertPath={insertChangedFileIntoConversation} onOpenFile={openChangedFilePreview} /> : null}
-                {message.role === 'user' && message.turnId && message.turnId !== remote.runningTurnId && lastMessageIndexByTurn.get(message.turnId) === index && !lastAssistantMessageIndexByTurn.has(message.turnId)
-                  ? <SSHOperationLog operations={sshOperationsByTurn.get(message.turnId) ?? []} /> : null}
               </Fragment>
             )
           })}
-          <SSHOperationLog operations={sshOperationsByTurn.get('') ?? []} />
           {!remote.loadingHistory && (remote.isRunning || remote.runningTurnId !== null || hasStreamingAssistant) ? (
             <div className="running-indicator" role="status" aria-live="polite">
               <div className="running-indicator__row">
@@ -4104,7 +4189,6 @@ const RemoteChatPane = memo(function RemoteChatPane({
                   ? <ActivityTimelineContent text="" timeline={runningOperationTimeline} operations={runningOperations} fileChanges={remote.runningTurnId ? remote.fileChangesByTurn[remote.runningTurnId] ?? emptyFileChanges : emptyFileChanges} onOpenFile={openChangedFilePreview} onOpenImage={openViewedImagePreview} />
                   : <OperationLog operations={runningOperations} fileChanges={remote.runningTurnId ? remote.fileChangesByTurn[remote.runningTurnId] ?? emptyFileChanges : emptyFileChanges} onOpenFile={openChangedFilePreview} onOpenImage={openViewedImagePreview} />
               ) : null}
-              {remote.runningTurnId && !hasStreamingAssistant ? <SSHOperationLog operations={sshOperationsByTurn.get(remote.runningTurnId) ?? []} /> : null}
             </div>
           ) : null}
         </div>
@@ -4143,14 +4227,15 @@ const RemoteChatPane = memo(function RemoteChatPane({
           {remote.writerConflict ? <button type="button" onClick={onCreateThread} disabled={remote.connection !== 'connected' || remote.loadingHistory}><Plus size={13} />新建远程对话</button> : null}
         </div>
       ) : null}
-      {terminalOpen ? (
-        <TerminalRecoveryBoundary key={remote.activeThread?.id ?? 'no-thread'} onClose={() => setTerminalOpen(false)}>
+      {terminalMounted && (terminalOpen || terminalSessionIsolated || terminalMountedThreadId === activeThreadId) ? (
+        <TerminalRecoveryBoundary key={terminalSessionIsolated ? `run-${terminalSessionId}` : activeThreadId ?? 'no-thread'} onClose={closeTerminal} hidden={!terminalOpen}>
           <Suspense fallback={(
             <ChatOverlayPanel
               ariaLabel="本机终端"
               backdropLabel="关闭本机终端"
               className="terminal-dialog"
-              onClose={() => setTerminalOpen(false)}
+              onClose={closeTerminal}
+              hidden={!terminalOpen}
               showCloseButton={false}
               header={<div className="terminal-dialog__title"><TerminalIcon size={16} aria-hidden="true" /><strong>本机终端</strong></div>}
             >
@@ -4161,20 +4246,15 @@ const RemoteChatPane = memo(function RemoteChatPane({
               key={terminalSessionId}
               token={token}
               engine={remote.activeEngine}
+              visible={terminalOpen}
               threadId={terminalSessionIsolated ? undefined : remote.activeThread?.id}
               cwd={terminalSessionCwd ?? remote.activeThread?.cwd ?? remote.runtime.workspace ?? undefined}
               directoryRequest={terminalDirectoryRequest}
-              onDirectoryRequestConsumed={(id) => setTerminalDirectoryRequest((current) => current?.id === id ? null : current)}
+              onDirectoryRequestConsumed={handleTerminalDirectoryRequestConsumed}
               runRequest={terminalRunRequest}
-              onRunRequestConsumed={(id) => setTerminalRunRequest((current) => current?.id === id ? null : current)}
-              onClose={() => setTerminalOpen(false)}
-              onInsertText={(value) => {
-                if (value.length >= longPasteThreshold) {
-                  composerHandle.current?.addDocumentAttachment({ name: 'terminal-output.md', content: value }, true)
-                } else {
-                  composerHandle.current?.insertDraftAtCursor(value, true)
-                }
-              }}
+              onRunRequestConsumed={handleTerminalRunRequestConsumed}
+              onClose={closeTerminal}
+              onInsertText={insertTerminalText}
             />
           </Suspense>
         </TerminalRecoveryBoundary>
@@ -5383,6 +5463,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
   }
   function closePane(paneIndex: number) {
     if (openPaneIndexes.length <= 1) return
+    forgetOpenTerminalThread(paneIndex)
     const position = openPaneIndexes.indexOf(paneIndex)
     const nextOpen = openPaneIndexes.filter((index) => index !== paneIndex)
     setOpenPaneIndexes(nextOpen)
@@ -5899,6 +5980,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
                 <div className="remote-pane-slot" data-pane-index={paneIndex} key={`${paneIndex}-thread`}>
                   <RemoteChatPane
                     {...paneActions[paneIndex]}
+                    paneIndex={paneIndex}
                     token={token}
                     remote={remotes[paneIndex]}
                     active={paneIndex === selectedPaneIndex}
@@ -5962,6 +6044,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
               onUpdateQueuedMessage={activeRemote.updateQueuedMessage}
               onEndQueuedEdit={activeRemote.endEditQueuedMessage}
               onRemoveQueued={activeRemote.removeQueuedMessage}
+              onMoveQueued={activeRemote.moveQueuedMessage}
               onInterrupt={pauseCurrentReply}
               onContinue={continueInterruptedReply}
               canContinue={canContinue}
@@ -6055,205 +6138,6 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
   )
 }
 
-const blankSSHServer: SSHServerInput = {
-  name: '', host: '', port: 22, user: '', identityFile: '',
-  authMethod: 'agent', password: '', privateKey: '', privateKeyPassphrase: '',
-  enabled: true, allowInspect: true, allowExecute: false,
-}
-
-function editableSSHServer(server: SSHServerConfig): SSHServerInput {
-  return {
-    name: server.name, host: server.host, port: server.port, user: server.user,
-    identityFile: server.identityFile, authMethod: server.authMethod,
-    password: '', privateKey: '', privateKeyPassphrase: '',
-    enabled: server.enabled, allowInspect: server.allowInspect, allowExecute: server.allowExecute,
-  }
-}
-
-function SSHSettingsCard({ token }: { token: string }) {
-  const [servers, setServers] = useState<SSHServerConfig[]>([])
-  const [loading, setLoading] = useState(true)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [draft, setDraft] = useState<SSHServerInput | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [testingId, setTestingId] = useState<string | null>(null)
-  const [pendingHostKey, setPendingHostKey] = useState<{ serverId: string; serverName: string; offer: SSHHostKeyOffer } | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const editingServer = servers.find((server) => server.id === editingId)
-  const credentialSaved = Boolean(editingServer?.hasCredential && editingServer.authMethod === draft?.authMethod)
-
-  useEffect(() => {
-    let cancelled = false
-    void codexRemoteClient.sshServers(token).then(({ servers: next }) => {
-      if (!cancelled) setServers(next)
-    }).catch((reason) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : '读取服务器失败。')
-    }).finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [token])
-
-  async function save(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!draft || busy) return
-    setBusy(true)
-    setError(null)
-    setMessage(null)
-    try {
-      const saved = await codexRemoteClient.saveSSHServer(token, draft, editingId ?? undefined)
-      setServers((current) => [...current.filter((server) => server.id !== saved.id), saved])
-      setPendingHostKey(null)
-      setDraft(null)
-      setEditingId(null)
-      setMessage('服务器配置已保存。AI 下次调用 SSH 工具时会使用新权限。')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '保存失败。')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function remove(server: SSHServerConfig) {
-    if (!window.confirm(`删除服务器“${server.name}”的配置？`)) return
-    setBusy(true)
-    setError(null)
-    setMessage(null)
-    try {
-      await codexRemoteClient.deleteSSHServer(token, server.id)
-      setServers((current) => current.filter((item) => item.id !== server.id))
-      if (pendingHostKey?.serverId === server.id) setPendingHostKey(null)
-      if (editingId === server.id) { setDraft(null); setEditingId(null) }
-      setMessage('服务器配置已删除。')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '删除失败。')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function test(server: SSHServerConfig) {
-    setTestingId(server.id)
-    setError(null)
-    setMessage(null)
-    setPendingHostKey(null)
-    try {
-      const result = await codexRemoteClient.testSSHServer(token, server.id)
-      if (result.hostKey) setPendingHostKey({ serverId: server.id, serverName: server.name, offer: result.hostKey })
-      else setMessage(`${server.name}：${result.ok ? '连接成功' : result.detail}`)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '连接检查失败。')
-    } finally {
-      setTestingId(null)
-    }
-  }
-
-  async function trustAndRetry() {
-    if (!pendingHostKey || testingId !== null) return
-    const { serverId, serverName, offer } = pendingHostKey
-    setTestingId(serverId)
-    setError(null)
-    setMessage(null)
-    try {
-      await codexRemoteClient.trustSSHHostKey(token, serverId, offer)
-      setPendingHostKey(null)
-      const result = await codexRemoteClient.testSSHServer(token, serverId)
-      if (result.hostKey) setError('指纹已保存，但连接仍需确认；请重新检查连接。')
-      else setMessage(`${serverName}：${result.ok ? '连接成功' : result.detail}`)
-    } catch (reason) {
-      setPendingHostKey(null)
-      setError(reason instanceof Error ? reason.message : '信任服务器失败，请重新检查连接。')
-    } finally {
-      setTestingId(null)
-    }
-  }
-
-  async function loadPrivateKey(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0]
-    event.currentTarget.value = ''
-    if (!file) return
-    if (file.size > 64 * 1024) {
-      setError('私钥文件不能超过 64 KiB。')
-      return
-    }
-    try {
-      const privateKey = await file.text()
-      setDraft((current) => current?.authMethod === 'privateKey' ? { ...current, privateKey } : current)
-      setError(null)
-    } catch {
-      setError('无法读取私钥文件。')
-    }
-  }
-
-  return <section className="theme-settings-card ssh-settings-card">
-    <div className="theme-settings-card__heading">
-      <div><h2><Server size={17} />远程 SSH</h2><p>目标服务器只需开启 SSH；Codex 和 Claude 可使用这里授权的工具。</p></div>
-      <button type="button" className="ssh-settings-button" onClick={() => { setEditingId(null); setDraft({ ...blankSSHServer }); setError(null); setMessage(null) }}><Plus size={14} />添加服务器</button>
-    </div>
-    <div className="ssh-settings-body">
-      {loading ? <p className="ssh-settings-empty">正在读取服务器…</p> : servers.length === 0 ? <p className="ssh-settings-empty">还没有服务器。添加后，在聊天中告诉 AI 使用 Code Remote SSH 工具即可。</p> : null}
-      {servers.map((server) => <div className="ssh-settings-server" key={server.id}>
-        <div className="ssh-settings-server__info">
-          <strong>{server.name}</strong><span>{server.user}@{server.host}:{server.port}</span>
-          <small>{server.enabled ? '已启用' : '已停用'} · {server.authMethod === 'agent' ? (server.identityFile ? '本机密钥路径' : 'ssh-agent') : server.authMethod === 'password' ? '密码认证' : '私钥认证'}{server.authMethod !== 'agent' ? (server.hasCredential ? '（凭据已保存）' : '（缺少凭据）') : ''} · {server.allowInspect ? '允许诊断' : '禁止诊断'} · {server.allowExecute ? '允许执行命令' : '禁止执行命令'}</small>
-        </div>
-        <div className="ssh-settings-actions">
-          <button type="button" disabled={busy || testingId !== null} onClick={() => void test(server)}>{testingId === server.id ? '检查中…' : '检查连接'}</button>
-          <button type="button" disabled={busy} onClick={() => { setEditingId(server.id); setDraft(editableSSHServer(server)); setError(null); setMessage(null) }}>编辑</button>
-          <button type="button" disabled={busy} onClick={() => void remove(server)}>删除</button>
-        </div>
-      </div>)}
-      {pendingHostKey ? <div className="ssh-settings-host-key" role="status">
-        <strong>首次连接 {pendingHostKey.serverName}</strong>
-        <p>确认这是你要连接的服务器后，点一次按钮即可。以后连接同一地址会自动识别。</p>
-        <span>{pendingHostKey.offer.host}:{pendingHostKey.offer.port}</span>
-        <code>{pendingHostKey.offer.algorithm} · {pendingHostKey.offer.fingerprint}</code>
-        <div className="ssh-settings-actions">
-          <button type="button" disabled={testingId !== null} onClick={() => void trustAndRetry()}>{testingId === pendingHostKey.serverId ? '连接中…' : '信任并重试'}</button>
-          <button type="button" disabled={testingId !== null} onClick={() => setPendingHostKey(null)}>取消</button>
-        </div>
-      </div> : null}
-      {draft ? <form className="ssh-settings-form" onSubmit={(event) => void save(event)}>
-        <strong>{editingId ? '编辑服务器' : '添加服务器'}</strong>
-        <div className="ssh-settings-fields">
-          <label>名称<input required maxLength={80} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：生产服务器" /></label>
-          <label>主机地址<input required value={draft.host} onChange={(event) => setDraft({ ...draft, host: event.target.value })} placeholder="IP 或域名" autoCapitalize="off" /></label>
-          <label>端口<input required type="number" min={1} max={65535} value={draft.port} onChange={(event) => setDraft({ ...draft, port: event.target.value === '' ? '' : Number(event.target.value) })} /></label>
-          <label>SSH 用户<input required value={draft.user} onChange={(event) => setDraft({ ...draft, user: event.target.value })} placeholder="例如：ubuntu" autoCapitalize="off" /></label>
-          <label className="ssh-settings-fields__wide">认证方式
-            <select value={draft.authMethod} onChange={(event) => setDraft({ ...draft, authMethod: event.target.value as SSHServerInput['authMethod'], password: '', privateKey: '', privateKeyPassphrase: '' })}>
-              <option value="agent">本机密钥路径 / ssh-agent</option>
-              <option value="password">SSH 密码</option>
-              <option value="privateKey">粘贴或上传私钥</option>
-            </select>
-          </label>
-          {draft.authMethod === 'agent' ? <label className="ssh-settings-fields__wide">本机私钥路径（可选）<input value={draft.identityFile} onChange={(event) => setDraft({ ...draft, identityFile: event.target.value })} placeholder="例如：/home/user/.ssh/id_ed25519；留空使用 ssh-agent" autoCapitalize="off" /></label> : null}
-          {draft.authMethod === 'password' ? <label className="ssh-settings-fields__wide">SSH 密码
-            <input type="password" autoComplete="new-password" required={!credentialSaved} value={draft.password ?? ''} onChange={(event) => setDraft({ ...draft, password: event.target.value })} placeholder={credentialSaved ? '已保存；留空保持原密码' : '填写目标服务器的 SSH 密码'} />
-          </label> : null}
-          {draft.authMethod === 'privateKey' ? <>
-            <label className="ssh-settings-fields__wide">私钥内容
-              <textarea rows={5} spellCheck={false} required={!credentialSaved} value={draft.privateKey ?? ''} onChange={(event) => setDraft({ ...draft, privateKey: event.target.value })} placeholder={credentialSaved ? '已保存；留空保持原私钥' : '粘贴以 -----BEGIN OPENSSH PRIVATE KEY----- 开头的私钥'} />
-            </label>
-            <label className="ssh-settings-fields__wide">或选择本机私钥文件<input type="file" onChange={(event) => void loadPrivateKey(event)} /></label>
-            <label className="ssh-settings-fields__wide">私钥口令（加密私钥才需要）<input type="password" autoComplete="new-password" value={draft.privateKeyPassphrase ?? ''} onChange={(event) => setDraft({ ...draft, privateKeyPassphrase: event.target.value })} placeholder={credentialSaved ? '留空保持原口令' : '未加密则留空'} /></label>
-          </> : null}
-        </div>
-        <div className="ssh-settings-permissions">
-          <label><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />启用服务器</label>
-          <label><input type="checkbox" checked={draft.allowInspect} onChange={(event) => setDraft({ ...draft, allowInspect: event.target.checked })} />允许只读诊断</label>
-          <label><input type="checkbox" checked={draft.allowExecute} onChange={(event) => setDraft({ ...draft, allowExecute: event.target.checked })} />允许执行远程命令</label>
-        </div>
-        <p className="ssh-settings-note">执行命令权限等同目标 SSH 用户；请给目标机使用权限合适的专用账户。首次连接时点击“检查连接”，按提示信任服务器。保存的密码、私钥及口令不会在页面回显。</p>
-        {window.location.protocol !== 'https:' ? <p className="ssh-settings-note ssh-settings-note--warning">当前页面使用 HTTP，填写的密码或私钥在传输途中没有 HTTPS 加密。建议改用 HTTPS 后再填写。</p> : null}
-        <div className="ssh-settings-actions"><button type="button" disabled={busy} onClick={() => { setDraft(null); setEditingId(null) }}>取消</button><button type="submit" disabled={busy}>{busy ? '保存中…' : '保存服务器'}</button></div>
-      </form> : null}
-      {message ? <p className="ssh-settings-feedback" role="status">{message}</p> : null}
-      {error ? <p className="ssh-settings-feedback ssh-settings-feedback--error" role="alert">{error}</p> : null}
-      <p className="ssh-settings-note">权限勾选约束 Code Remote SSH 工具。当前 AI 仍可能使用本机命令直接调用 SSH；严格隔离需要给 AI 和远端配置受限账户。输出会保存在聊天操作记录中，请勿执行会打印密钥的命令。</p>
-    </div>
-  </section>
-}
-
 function MCPApprovalsCard({ token }: { token: string }) {
   const [approvals, setApprovals] = useState<MCPApprovalGrant[]>([])
   const [loading, setLoading] = useState(true)
@@ -6263,6 +6147,9 @@ function MCPApprovalsCard({ token }: { token: string }) {
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
+    setError(null)
+    setMessage(null)
     void codexRemoteClient.mcpApprovals(token).then(({ approvals: next }) => {
       if (!cancelled) setApprovals(next)
     }).catch((reason) => {
@@ -6286,22 +6173,23 @@ function MCPApprovalsCard({ token }: { token: string }) {
     }
   }
 
-  return <section className="theme-settings-card ssh-settings-card">
+  if (loading || (approvals.length === 0 && !error)) return null
+
+  return <section className="theme-settings-card mcp-approvals-card">
     <div className="theme-settings-card__heading">
       <div><h2><ShieldCheck size={17} />MCP 自动批准</h2><p>这里保存了你在聊天弹窗中选择的「始终允许」。</p></div>
     </div>
-    <div className="ssh-settings-body">
-      {loading ? <p className="ssh-settings-empty">正在读取授权…</p> : approvals.length === 0 ? <p className="ssh-settings-empty">暂无已保存的 MCP 授权。</p> : null}
-      {approvals.map((grant) => <div className="ssh-settings-server" key={grant.id}>
-        <div className="ssh-settings-server__info">
+    <div className="mcp-approvals-body">
+      {approvals.map((grant) => <div className="mcp-approvals-grant" key={grant.id}>
+        <div className="mcp-approvals-grant__info">
           <strong>{grant.serverName}{grant.scope === 'tool' ? ` · ${grant.toolName ?? ''}` : ''}</strong>
           <small>{grant.scope === 'tool' ? '仅此工具' : '该 MCP 服务器的所有工具'}</small>
         </div>
-        <div className="ssh-settings-actions"><button type="button" disabled={revokingId !== null} onClick={() => void revoke(grant)}>{revokingId === grant.id ? '撤销中…' : '撤销授权'}</button></div>
+        <div className="mcp-approvals-actions"><button type="button" disabled={revokingId !== null} onClick={() => void revoke(grant)}>{revokingId === grant.id ? '撤销中…' : '撤销授权'}</button></div>
       </div>)}
-      {message ? <p className="ssh-settings-feedback" role="status">{message}</p> : null}
-      {error ? <p className="ssh-settings-feedback ssh-settings-feedback--error" role="alert">{error}</p> : null}
-      <p className="ssh-settings-note">自动批准仅跳过 MCP 工具调用确认；远程 SSH 的逐台权限仍会生效。</p>
+      {message ? <p className="mcp-approvals-feedback" role="status">{message}</p> : null}
+      {error ? <p className="mcp-approvals-feedback mcp-approvals-feedback--error" role="alert">{error}</p> : null}
+      <p className="mcp-approvals-note">自动批准仅跳过 MCP 工具调用确认，工具自身的权限限制仍然生效。</p>
     </div>
   </section>
 }
@@ -6496,13 +6384,12 @@ function ThemeSettingsPanel({ token, preferences, onChange, onClose, chatShortcu
         <div>
           <span className="theme-settings-panel__eyebrow">PREFERENCES</span>
           <h1>设置</h1>
-          <p>界面偏好保存在当前设备；远程服务器配置保存在服务端。</p>
+          <p>界面偏好保存在当前设备。</p>
         </div>
         <button className="icon-button theme-settings-panel__close" type="button" aria-label="返回对话" onClick={onClose}><X size={18} /></button>
       </header>
 
       <div className="theme-settings-panel__content">
-        <SSHSettingsCard token={token} />
         <MCPApprovalsCard token={token} />
         <CPAUsageSettingsCard settings={cpaUsageSettings} onChange={onCPAUsageSettingsChange} />
 
@@ -7197,12 +7084,12 @@ const TurnElapsed = memo(function TurnElapsed({ startedAt }: { startedAt: number
   return <time className="running-indicator__elapsed" aria-live="off">已用 {formatTurnDuration(now - startedAt)}</time>
 })
 
-function MessageChoiceForm({ groups, enabled, onUse, onSend }: { groups: MessageChoiceGroup[]; enabled: boolean; onUse: (reply: string) => boolean; onSend: (reply: string) => Promise<boolean> }) {
+function MessageChoiceForm({ groups, enabled, onUse, onSend }: { groups: MessageChoiceGroup[]; enabled: boolean; onUse: (reply: string) => boolean; onSend: (reply: string) => Promise<ChoiceReplyDelivery | false> }) {
   const [selected, setSelected] = useState(() => groups.map(() => -1))
   const [customAnswers, setCustomAnswers] = useState(() => groups.map(() => ''))
   const [inserted, setInserted] = useState(false)
   const [sending, setSending] = useState(false)
-  const [sent, setSent] = useState(false)
+  const [submitted, setSubmitted] = useState<ChoiceReplyDelivery | null>(null)
   const [notice, setNotice] = useState('选好后可直接发送，也可填入输入框修改')
   const complete = selected.every((optionIndex, index) => optionIndex >= 0 || optionIndex === -2 && Boolean(customAnswers[index].trim()))
   const reply = () => formatAssistantChoiceReply(groups, selected, customAnswers)
@@ -7220,32 +7107,35 @@ function MessageChoiceForm({ groups, enabled, onUse, onSend }: { groups: Message
                 type="button"
                 key={`${optionIndex}-${option}`}
                 aria-pressed={selected[groupIndex] === optionIndex}
-                disabled={!enabled || inserted || sending || sent}
+                disabled={!enabled || inserted || sending || submitted !== null}
                 onClick={() => setSelected((current) => current.map((value, index) => index === groupIndex
                   ? (value === optionIndex ? -1 : optionIndex)
                   : value))}
               >{selected[groupIndex] === optionIndex ? <Check size={14} aria-hidden="true" /> : null}<span>{option}{group.descriptions?.[optionIndex] ? <small>{group.descriptions[optionIndex]}</small> : null}</span></button>
             ))}
-            <button className={`message-choices__option${selected[groupIndex] === -2 ? ' message-choices__option--selected' : ''}`} type="button" aria-pressed={selected[groupIndex] === -2} disabled={!enabled || inserted || sending || sent} onClick={() => setSelected((current) => current.map((value, index) => index === groupIndex ? value === -2 ? -1 : -2 : value))}>其他答案（没有合适选项时填写）</button>
+            <button className={`message-choices__option${selected[groupIndex] === -2 ? ' message-choices__option--selected' : ''}`} type="button" aria-pressed={selected[groupIndex] === -2} disabled={!enabled || inserted || sending || submitted !== null} onClick={() => setSelected((current) => current.map((value, index) => index === groupIndex ? value === -2 ? -1 : -2 : value))}>其他答案（没有合适选项时填写）</button>
           </div>
-          {selected[groupIndex] === -2 ? <textarea className="message-choices__custom" value={customAnswers[groupIndex]} maxLength={1000} disabled={!enabled || inserted || sending || sent} aria-label={`${group.question}的其他答案`} onChange={(event) => setCustomAnswers((current) => current.map((value, index) => index === groupIndex ? event.target.value : value))} /> : null}
+          {selected[groupIndex] === -2 ? <textarea className="message-choices__custom" value={customAnswers[groupIndex]} maxLength={1000} disabled={!enabled || inserted || sending || submitted !== null} aria-label={`${group.question}的其他答案`} onChange={(event) => setCustomAnswers((current) => current.map((value, index) => index === groupIndex ? event.target.value : value))} /> : null}
         </fieldset>
       ))}
       {enabled ? <div className="message-choices__footer">
-        <button type="button" disabled={!complete || inserted || sending || sent} onClick={async () => {
+        <button type="button" disabled={!complete || inserted || sending || submitted !== null} onClick={async () => {
           setSending(true)
           try {
-            if (await onSend(reply())) {
-              setSent(true)
-              setNotice('答案已提交，AI 会继续回复；忙碌时会显示在排队中')
+            const result = await onSend(reply())
+            if (result) {
+              setSubmitted(result)
+              setNotice(result === 'sent' ? '答案已发送，AI 会继续回复'
+                : result === 'queued' ? '暂未立即送达，答案已加入排队；可在排队消息中点击“插队”'
+                  : '送达状态未确认，请核对聊天记录和排队消息，避免重复发送')
             } else setNotice('发送未确认，请先核对聊天记录和排队消息，再决定是否重试')
           } catch {
             setNotice('发送未确认，请先核对聊天记录和排队消息，再决定是否重试')
           } finally {
             setSending(false)
           }
-        }}>{sending ? '正在发送…' : sent ? '答案已提交' : '发送并继续'}</button>
-        <button type="button" disabled={!complete || inserted || sending || sent} onClick={() => {
+        }}>{sending ? '正在发送…' : submitted === 'sent' ? '答案已发送' : submitted === 'queued' ? '已加入排队' : submitted === 'unverified' ? '送达未确认' : '发送并继续'}</button>
+        <button type="button" disabled={!complete || inserted || sending || submitted !== null} onClick={() => {
           if (onUse(reply())) setInserted(true)
           else setNotice('请先结束当前编辑，再填入回答')
         }}>{inserted ? '已填入输入框' : '填入输入框'}</button>
@@ -7255,30 +7145,17 @@ function MessageChoiceForm({ groups, enabled, onUse, onSend }: { groups: Message
   )
 }
 
-const SSHOperationLog = memo(function SSHOperationLog({ operations }: { operations: SSHOperation[] }) {
-  if (operations.length === 0) return null
-  return <div className="ssh-operation-log" aria-label="远程 SSH 操作">
-    {operations.map((operation) => <details className={`ssh-operation ssh-operation--${operation.status}`} key={operation.id} open={operation.status !== 'completed'}>
-      <summary><Server size={14} /><strong>{operation.server_name}</strong><span>{operation.status === 'running' ? '执行中' : operation.status === 'failed' ? '失败' : `退出码 ${operation.exit_code ?? '—'}`}</span></summary>
-      <code className="ssh-operation__command">{operation.command}</code>
-      <pre className="ssh-operation__output">{operation.output || (operation.status === 'running' ? '等待远程输出…' : '命令没有输出。')}</pre>
-      {operation.status !== 'running' ? <small>退出码：{operation.exit_code ?? '无'}</small> : null}
-    </details>)}
-  </div>
-})
-
-const MessageBubble = memo(function MessageBubble({ message, assistantName, operations, sshOperations, fileChanges, activityTimeline, showOperations, choiceVisible, choiceEnabled, onUseChoices, onSendChoices, copyFeedback, onCopy, onOpenFile, onOpenImage }: {
+const MessageBubble = memo(function MessageBubble({ message, assistantName, operations, fileChanges, activityTimeline, showOperations, choiceVisible, choiceEnabled, onUseChoices, onSendChoices, copyFeedback, onCopy, onOpenFile, onOpenImage }: {
   message: CodexMessage
   assistantName: string
   operations: CodexOperation[]
-  sshOperations: SSHOperation[]
   fileChanges: CodexFileChange[]
   activityTimeline: CodexActivityTimelineEntry[]
   showOperations: boolean
   choiceVisible?: boolean
   choiceEnabled?: boolean
   onUseChoices?: (reply: string) => boolean
-  onSendChoices?: (reply: string, immediately: boolean) => Promise<boolean>
+  onSendChoices?: (reply: string) => Promise<ChoiceReplyDelivery | false>
   copyFeedback: string | null
   onCopy: (message: CodexMessage) => void | Promise<void>
   onOpenFile: (path: string, diff?: string) => void
@@ -7297,7 +7174,7 @@ const MessageBubble = memo(function MessageBubble({ message, assistantName, oper
     : null, [choiceVisible, choiceText, message.role, structuredQuestions])
   const choiceGroups = choiceContent?.groups ?? []
   const choiceCard = choiceGroups.length > 0 && onUseChoices && onSendChoices
-    ? <MessageChoiceForm key={JSON.stringify(choiceGroups)} groups={choiceGroups} enabled={Boolean(choiceEnabled)} onUse={onUseChoices} onSend={(reply) => onSendChoices(reply, message.choiceDelivery?.toLowerCase().startsWith('async') ?? false)} />
+    ? <MessageChoiceForm key={JSON.stringify(choiceGroups)} groups={choiceGroups} enabled={Boolean(choiceEnabled)} onUse={onUseChoices} onSend={onSendChoices} />
     : null
   const choiceInTimeline = Boolean(choiceCard && structuredQuestions && message.choiceItemId
     && activityTimeline.some((entry) => entry.type === 'message' && entry.itemId === message.choiceItemId && entry.length > 0))
@@ -7329,7 +7206,6 @@ const MessageBubble = memo(function MessageBubble({ message, assistantName, oper
           : renderedText ? <MessageContent text={renderedText} hideStandaloneSeparators={message.role === 'assistant'} showCodeCopy={!message.streaming} /> : null}
         {message.role === 'assistant' ? copyAction : null}
         {showOperations && operations.length > 0 && activityTimeline.length === 0 ? <OperationLog operations={operations} fileChanges={fileChanges} onOpenFile={onOpenFile} onOpenImage={onOpenImage} /> : null}
-        {showOperations ? <SSHOperationLog operations={sshOperations} /> : null}
         {!choiceInTimeline && !splitStructuredChoice ? choiceCard : null}
       </div>
       {message.role === 'user' && (sentAtLabel || copyAction) ? (

@@ -28,7 +28,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from watchfiles import awatch
 
@@ -52,8 +52,8 @@ from .codex_app_server import (
     CodexThreadNotFoundError,
 )
 from .shared_state import QueueConflictError, SharedQueueService, SharedStateStore
-from .remote_ssh import SSHConfigurationError, SSHJournal, SSHServerStore, run_ssh, ssh_host_key_offer, trust_ssh_host_key
 from .mcp_approvals import MCPApprovalError, MCPApprovalNotFoundError, MCPApprovalStore
+from .retired_features import remove_retired_ssh_state
 from .terminal import TMUX_CLEANUP_INTERVAL_SECONDS, TerminalSession, cleanup_tmux_sessions
 
 logger = logging.getLogger(__name__)
@@ -128,28 +128,6 @@ class PairRequest(BaseModel):
     code: str = Field(min_length=6, max_length=12)
 
 
-class SSHServerRequest(BaseModel):
-    name: str
-    host: str
-    port: int = 22
-    user: str
-    identityFile: str = ""
-    authMethod: str | None = None
-    password: str = ""
-    privateKey: str = ""
-    privateKeyPassphrase: str = ""
-    enabled: bool = True
-    allowInspect: bool = True
-    allowExecute: bool = False
-
-
-class SSHHostKeyTrustRequest(BaseModel):
-    host: str = Field(min_length=1, max_length=253)
-    port: int = Field(ge=1, le=65535)
-    algorithm: str = Field(min_length=1, max_length=64)
-    fingerprint: str = Field(min_length=10, max_length=128)
-
-
 class PairingStateError(RuntimeError):
     """The local trusted-device state could not be safely updated."""
 
@@ -175,6 +153,8 @@ MESSAGE_IMAGE_RETENTION_SECONDS = 90 * 24 * 60 * 60
 MESSAGE_IMAGE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_BYTES = 512 * 1024 * 1024
+WORKSPACE_DOWNLOAD_TICKET_TTL_SECONDS = 60
+MAX_WORKSPACE_DOWNLOAD_TICKETS = 128
 MAX_STAGED_PDF_BYTES = 512 * 1024 * 1024
 PDF_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_PDF_ATTACHMENTS_PER_TURN = 8
@@ -366,6 +346,12 @@ class QueueMessageIdRequest(BaseModel):
     owner_id: str | None = Field(default=None, min_length=8, max_length=128)
 
 
+class QueueMoveRequest(BaseModel):
+    message_id: str = Field(min_length=8, max_length=128)
+    adjacent_message_id: str = Field(min_length=8, max_length=128)
+    direction: Literal["up", "down"]
+
+
 class PinRequest(BaseModel):
     pinned: bool
 
@@ -520,6 +506,11 @@ class WorkspaceFileSaveRequest(BaseModel):
     revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class WorkspaceFileDownloadRequest(BaseModel):
+    cwd: str | None = Field(default=None, max_length=4_096)
+    path: str = Field(min_length=1, max_length=WORKSPACE_TREE_MAX_PATH_LENGTH)
+
+
 class WorkspaceEntryCreateRequest(BaseModel):
     cwd: str | None = Field(default=None, max_length=4_096)
     path: str = Field(min_length=1, max_length=WORKSPACE_TREE_MAX_PATH_LENGTH)
@@ -607,6 +598,18 @@ def workspace_mutation_path(base: Path, relative_path: str, *, allow_root: bool 
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="暂不支持修改符号链接")
     if require_exists and not candidate.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件或文件夹不存在")
+    return candidate
+
+
+def workspace_download_path(base: Path, relative_path: str) -> Path:
+    candidate = workspace_mutation_path(base, relative_path)
+    if not candidate.is_file():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="只能下载文件，不能下载文件夹")
+    try:
+        with candidate.open("rb"):
+            pass
+    except OSError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无法读取该文件") from error
     return candidate
 
 
@@ -1595,10 +1598,8 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     except OSError as error:
         raise RuntimeError(f"无法准备 Code Remote 用户数据目录：{auth.state_path.parent}：{error}") from error
     state_path = Path(os.environ.get("CODEX_REMOTE_STATE_FILE", str(auth.state_path.parent / "shared-state.sqlite3"))).expanduser()
-    ssh_servers = SSHServerStore(auth.state_path.parent / "ssh-servers.json")
-    ssh_journal = SSHJournal(auth.state_path.parent / "ssh-operations.sqlite3")
     mcp_approvals = MCPApprovalStore(auth.state_path.parent / "mcp-approvals.json")
-    app_server.enable_ssh_mcp(ssh_servers.path, ssh_journal)
+    remove_retired_ssh_state(auth.state_path.parent, mcp_approvals)
     app_server.enable_mcp_approvals(mcp_approvals)
     shared_state = SharedStateStore(state_path)
     claude_code = ClaudeCodeServer(
@@ -1607,7 +1608,6 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
         state_path.parent / "claude-code.sqlite3",
         app_server._emit,
     )
-    claude_code.enable_ssh_mcp(ssh_servers.path, ssh_journal)
     idempotent_requests = IdempotentRequestRegistry()
     image_directory = prepare_message_image_directory(auth.state_path.parent)
     image_storage_lock = threading.Lock()
@@ -1681,6 +1681,7 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
         return result.get("turn_id")
 
     shared_queue = SharedQueueService(shared_state, app_server, send_queued_turn, claude_code)
+    workspace_download_tickets: dict[str, tuple[Path, str, float]] = {}
 
     def paused_thread_view(thread_id: str, thread: dict[str, Any]) -> dict[str, Any]:
         if is_claude_thread_id(thread_id) or not shared_state.is_paused(thread_id):
@@ -1753,7 +1754,7 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
             shared_state.close()
             shutil.rmtree(runtime_directory, ignore_errors=True)
 
-    app = FastAPI(title="Code Remote", version="0.83.0-dev.1", lifespan=lifespan)
+    app = FastAPI(title="Code Remote", version="0.86.1-dev.1", lifespan=lifespan)
     app.state.codex = app_server
     app.state.claude_code = claude_code
     app.state.auth = auth
@@ -1762,8 +1763,6 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     app.state.message_image_directory = image_directory
     app.state.shared_state = shared_state
     app.state.shared_queue = shared_queue
-    app.state.ssh_servers = ssh_servers
-    app.state.ssh_journal = ssh_journal
     app.state.mcp_approvals = mcp_approvals
     browser_history_sync = BrowserHistorySync()
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
@@ -1778,7 +1777,8 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
 
     @app.middleware("http")
     async def require_pairing(request: Request, call_next):
-        if request.url.path.startswith("/api/v1/") and request.url.path != "/api/v1/pair":
+        ticket_download = request.method == "GET" and request.url.path.startswith("/api/v1/codex/workspace/download/")
+        if request.url.path.startswith("/api/v1/") and request.url.path != "/api/v1/pair" and not ticket_download:
             authorization = request.headers.get("authorization", "")
             token = authorization.removeprefix("Bearer ").strip()
             if not auth.accepts(token):
@@ -1846,65 +1846,6 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     async def claude_status() -> dict[str, Any]:
         return claude_code.status()
 
-    @app.get("/api/v1/ssh/servers")
-    async def list_ssh_servers() -> dict[str, Any]:
-        try:
-            return {"servers": ssh_servers.list()}
-        except SSHConfigurationError as error:
-            raise HTTPException(status_code=500, detail=str(error)) from error
-
-    @app.post("/api/v1/ssh/servers", status_code=status.HTTP_201_CREATED)
-    async def add_ssh_server(body: SSHServerRequest) -> dict[str, Any]:
-        try:
-            return ssh_servers.save(body.model_dump())
-        except SSHConfigurationError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-
-    @app.post("/api/v1/ssh/servers/{server_id}")
-    async def update_ssh_server(server_id: str, body: SSHServerRequest) -> dict[str, Any]:
-        try:
-            return ssh_servers.save(body.model_dump(), server_id=server_id)
-        except SSHConfigurationError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-
-    @app.delete("/api/v1/ssh/servers/{server_id}")
-    async def delete_ssh_server(server_id: str) -> dict[str, bool]:
-        try:
-            ssh_servers.delete(server_id)
-            return {"deleted": True}
-        except SSHConfigurationError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-
-    @app.post("/api/v1/ssh/servers/{server_id}/test")
-    async def test_ssh_server(server_id: str) -> dict[str, Any]:
-        try:
-            host_key = await asyncio.to_thread(ssh_host_key_offer, ssh_servers, server_id)
-            if host_key is not None:
-                return {"ok": False, "detail": "首次连接，请确认并信任这台服务器。", "hostKey": host_key}
-            # This explicit user action performs only `true`, even when AI permissions are off.
-            result = await asyncio.to_thread(run_ssh, ssh_servers, None, "", server_id,
-                                             "true", permission="", allow_disabled=True, timeout=12)
-            return {"ok": result["exitCode"] == 0, "detail": result["error"] or result["output"] or
-                    ("连接成功" if result["exitCode"] == 0 else "SSH 连接失败")}
-        except SSHConfigurationError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        except OSError as error:
-            raise HTTPException(status_code=503, detail=f"无法启动 SSH：{error}") from error
-
-    @app.post("/api/v1/ssh/servers/{server_id}/trust-host-key")
-    async def trust_ssh_server_host_key(server_id: str, body: SSHHostKeyTrustRequest) -> dict[str, bool]:
-        try:
-            await asyncio.to_thread(trust_ssh_host_key, ssh_servers, server_id, **body.model_dump())
-            return {"trusted": True}
-        except SSHConfigurationError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-
-    @app.get("/api/v1/ssh/operations/{thread_id}")
-    async def ssh_operations(thread_id: str) -> dict[str, Any]:
-        if not thread_id or len(thread_id) > 512:
-            raise HTTPException(status_code=422, detail="聊天编号无效。")
-        return {"operations": await asyncio.to_thread(ssh_journal.list_for_thread, thread_id)}
-
     @app.get("/api/v1/mcp/approvals")
     async def list_mcp_approvals() -> dict[str, Any]:
         try:
@@ -1931,6 +1872,41 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
     async def workspace_file(cwd: str | None = None, path: str = "") -> dict[str, str | int | bool]:
         base = workspace_base_for_cwd(app_server.workspace, cwd)
         return workspace_file_preview(base, path)
+
+    @app.post("/api/v1/codex/workspace/download")
+    async def prepare_workspace_download(body: WorkspaceFileDownloadRequest) -> dict[str, str]:
+        base = workspace_base_for_cwd(app_server.workspace, body.cwd)
+        workspace_download_path(base, body.path)
+        now = time.monotonic()
+        for ticket, (_, _, expires_at) in tuple(workspace_download_tickets.items()):
+            if expires_at <= now:
+                workspace_download_tickets.pop(ticket, None)
+        while len(workspace_download_tickets) >= MAX_WORKSPACE_DOWNLOAD_TICKETS:
+            workspace_download_tickets.pop(next(iter(workspace_download_tickets)))
+        ticket = secrets.token_urlsafe(32)
+        workspace_download_tickets[ticket] = (base, body.path, now + WORKSPACE_DOWNLOAD_TICKET_TTL_SECONDS)
+        return {"url": f"/api/v1/codex/workspace/download/{ticket}"}
+
+    @app.get("/api/v1/codex/workspace/download/{ticket}")
+    async def download_workspace_file(ticket: str) -> FileResponse:
+        entry = workspace_download_tickets.pop(ticket, None)
+        if entry is None or entry[2] <= time.monotonic():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="下载链接已失效，请重新选择文件下载")
+        base, relative_path, _ = entry
+        candidate = workspace_download_path(base, relative_path)
+        return FileResponse(
+            candidate,
+            filename=candidate.name,
+            media_type="application/octet-stream",
+            content_disposition_type="attachment",
+            # Keep large files in their original form; GZipMiddleware skips responses with Content-Encoding.
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Encoding": "identity",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/api/v1/codex/workspace/image")
     async def workspace_image(cwd: str | None = None, path: str = "") -> dict[str, str | int]:
@@ -2244,6 +2220,14 @@ def create_app(workspace: Path | None = None, codex_command: str | None = None) 
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         await shared_queue.changed(thread_id)
         return {"queue": shared_state.queue(thread_id)}
+
+    @app.post("/api/v1/codex/queue/{thread_id}/move")
+    async def move_queued_message(thread_id: str, body: QueueMoveRequest) -> dict[str, Any]:
+        try:
+            queue = await shared_queue.move(thread_id, body.message_id, body.adjacent_message_id, body.direction)
+        except QueueConflictError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        return {"queue": queue}
 
     @app.post("/api/v1/codex/queue/{thread_id}/send-now")
     async def send_queued_message_now(thread_id: str, body: QueueMessageIdRequest) -> dict[str, Any]:
