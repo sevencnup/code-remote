@@ -4,11 +4,13 @@ import android.animation.ValueAnimator
 import android.Manifest
 import android.app.Activity
 import android.app.Dialog
+import android.app.DatePickerDialog
 import android.app.DownloadManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.TimePickerDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -131,6 +133,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.Calendar
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -816,6 +819,9 @@ class MainActivity : Activity() {
     private val threadReadsInFlight = mutableSetOf<String>()
     private val pendingThreadReads = mutableSetOf<String>()
     private val pinnedThreadIds = mutableSetOf<String>()
+    private val scheduledThreadIds = mutableSetOf<String>()
+    private var scheduledThreadIdsRefreshInFlight = false
+    private var scheduledThreadIdsRefreshAgain = false
     private val selectedSidebarThreadIds = mutableSetOf<String>()
     private var sidebarSelectionMode = false
     private var sidebarSelectionBusy = false
@@ -1457,6 +1463,7 @@ class MainActivity : Activity() {
         activeThread = null
         runtime = JSONObject()
         threads = JSONArray()
+        scheduledThreadIds.clear()
         models = JSONArray()
         queuedMessages = JSONArray()
         remoteUserMessageOverlays.clear()
@@ -2083,6 +2090,13 @@ class MainActivity : Activity() {
         preferenceScroll.addView(preferenceRow)
         footer.addView(preferenceScroll, LinearLayout.LayoutParams(0, dp(footerHeight), 1f))
         val footerActionSize = if (retroTheme) dp(36) else dp(34)
+        footer.addView(iconButton("schedule", "定时发送") { chooseScheduledSendTime() }.apply {
+            setPadding(dp(7), dp(7), dp(7), dp(7))
+            tooltipText = "定时发送"
+        }, LinearLayout.LayoutParams(footerActionSize, dp(34)).apply {
+            rightMargin = dp(2)
+            gravity = Gravity.CENTER_VERTICAL
+        })
         footer.addView(iconButton("add", "添加图片或文件") { chooseAttachment() }.apply {
             setPadding(dp(6), dp(6), dp(6), dp(6))
         }, LinearLayout.LayoutParams(footerActionSize, dp(34)).apply {
@@ -2906,11 +2920,22 @@ class MainActivity : Activity() {
             if (pixelTheme) icon.setPadding(dp(2), dp(2), dp(2), dp(2))
             row.addView(icon, LinearLayout.LayoutParams(dp(threadIconSize), dp(threadIconSize)).apply { rightMargin = dp(if (pixelTheme) 8 else 9) })
             val title = threadTitle(thread)
+            val hasScheduledMessage = id in scheduledThreadIds
             val titleView = label(title, if (pixelTheme) 14 else 13, if (selected) TEXT else SUBTLE, selected, translateUi = false).apply {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
+                contentDescription = if (hasScheduledMessage) "$title，有定时发送" else title
             }
             row.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
+            if (hasScheduledMessage) row.addView(ImageView(this).apply {
+                setPixelAwareImageResource(iconResource("schedule"))
+                imageTintList = if (retroTheme && !pixelTheme) null else ColorStateList.valueOf(iconTint("schedule"))
+                contentDescription = "有定时发送"
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+            }, LinearLayout.LayoutParams(dp(15), dp(15)).apply {
+                leftMargin = dp(4)
+                rightMargin = dp(2)
+            })
             val choose = {
                 if (id in selectedSidebarThreadIds) selectedSidebarThreadIds.remove(id) else selectedSidebarThreadIds.add(id)
                 renderSidebar(force = true)
@@ -3236,6 +3261,35 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun refreshScheduledThreadIds() {
+        if (token.isBlank()) return
+        if (scheduledThreadIdsRefreshInFlight) {
+            scheduledThreadIdsRefreshAgain = true
+            return
+        }
+        scheduledThreadIdsRefreshInFlight = true
+        val generation = connectionGeneration
+        val api = RemoteApi(endpoint, token)
+        io.execute {
+            val result = runCatching { api.get("/api/v1/codex/queue/scheduled-thread-ids").optJSONArray("thread_ids") }.getOrNull()
+            handler.post {
+                scheduledThreadIdsRefreshInFlight = false
+                if (generation == connectionGeneration && result != null) {
+                    val next = (0 until result.length()).mapTo(mutableSetOf()) { result.optString(it) }
+                    if (next != scheduledThreadIds) {
+                        scheduledThreadIds.clear()
+                        scheduledThreadIds.addAll(next)
+                        renderSidebar(force = true)
+                    }
+                }
+                if (scheduledThreadIdsRefreshAgain) {
+                    scheduledThreadIdsRefreshAgain = false
+                    refreshScheduledThreadIds()
+                }
+            }
+        }
+    }
+
     private fun refreshClaudeStatus() {
         val generation = connectionGeneration
         val api = RemoteApi(endpoint, token)
@@ -3258,6 +3312,7 @@ class MainActivity : Activity() {
 
     private fun refreshThreads(showErrors: Boolean) {
         if (token.isBlank()) return
+        refreshScheduledThreadIds()
         lastThreadListRefreshAt = android.os.SystemClock.uptimeMillis()
         val generation = connectionGeneration
         val api = RemoteApi(endpoint, token)
@@ -3748,6 +3803,7 @@ class MainActivity : Activity() {
                     else pausedThreadKeys.remove(threadTitleKey(threadId))
                     renderQueue()
                     updateSendButton()
+                    refreshScheduledThreadIds()
                 }
             } catch (error: Exception) {
                 if (showErrors) handler.post { if (connection == connectionGeneration) showStatus(error.message ?: "读取排队消息失败") }
@@ -6959,6 +7015,7 @@ class MainActivity : Activity() {
                 item.optBoolean("editing") -> "正在编辑 · 自动发送已暂停，可点铅笔取回编辑"
                 item.has("sendAttempt") && !item.isNull("sendAttempt") -> "送达状态待核对，请先查看聊天记录"
                 item.optString("blockedReason").isNotBlank() -> item.optString("blockedReason")
+                scheduledTimeLabel(item.optString("scheduledAt")) != null -> "定于 ${scheduledTimeLabel(item.optString("scheduledAt"))} 发送"
                 index == 0 && running -> "当前回复结束后自动发送；可点箭头尝试立即发送"
                 else -> null
             }
@@ -6966,15 +7023,15 @@ class MainActivity : Activity() {
             val claudeQueueItem = item.has("claudeModel") || item.has("claudeEffort") || currentMode == "claude-code"
             val rawModel = item.optString(if (claudeQueueItem) "claudeModel" else "model")
             val rawEffort = item.optString(if (claudeQueueItem) "claudeEffort" else "effort")
-            val queuedModel = if (rawModel.isBlank() || rawModel == "default") "默认模型"
+            val queuedModel = if (rawModel.isBlank() || rawModel == "default") "Default"
                 else if (claudeQueueItem) claudeModelLabel(rawModel) else modelLabel(rawModel)
-            val queuedEffort = if (rawEffort.isBlank() || rawEffort == "default") "默认"
+            val queuedEffort = if (rawEffort.isBlank() || rawEffort == "default") "Default"
                 else effortLabel(rawEffort)
             val details = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            details.addView(label("模型：$queuedModel  ·  思考：$queuedEffort", 10, if (pixelTheme) Color.rgb(74, 88, 106) else MUTED).apply {
+            details.addView(label("$queuedModel  ·  $queuedEffort", 10, if (pixelTheme) Color.rgb(74, 88, 106) else MUTED).apply {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, dp(44), 1f))
@@ -7056,6 +7113,145 @@ class MainActivity : Activity() {
             }
         }
         return image
+    }
+
+    private fun chooseScheduledSendTime() {
+        if (queueEditPending || queueEditItem != null) {
+            showStatus("请先结束排队消息编辑")
+            return
+        }
+        if (sendBusy) return
+        if (composerInput.text.toString().isBlank() && selectedFiles.isEmpty()) {
+            showStatus("请先输入消息或添加附件")
+            return
+        }
+
+        val today = Calendar.getInstance()
+        val minimumDate = (today.clone() as Calendar).apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        DatePickerDialog(this, { _, year, month, day ->
+            val selectedDate = Calendar.getInstance().apply {
+                clear()
+                set(year, month, day)
+            }
+            val now = Calendar.getInstance()
+            val sameDay = year == now.get(Calendar.YEAR) && month == now.get(Calendar.MONTH) && day == now.get(Calendar.DAY_OF_MONTH)
+            val suggestedTime = if (sameDay) (now.clone() as Calendar).apply { add(Calendar.MINUTE, 5) }
+                else (selectedDate.clone() as Calendar).apply { set(Calendar.HOUR_OF_DAY, 9) }
+            TimePickerDialog(this, { _, hour, minute ->
+                val scheduled = (selectedDate.clone() as Calendar).apply {
+                    set(Calendar.HOUR_OF_DAY, hour)
+                    set(Calendar.MINUTE, minute)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                if (scheduled.timeInMillis <= System.currentTimeMillis()) {
+                    showStatus("发送时间必须晚于现在")
+                    return@TimePickerDialog
+                }
+                scheduleCurrentMessage(Instant.ofEpochMilli(scheduled.timeInMillis).toString())
+            }, suggestedTime.get(Calendar.HOUR_OF_DAY), suggestedTime.get(Calendar.MINUTE), android.text.format.DateFormat.is24HourFormat(this)).show()
+        }, today.get(Calendar.YEAR), today.get(Calendar.MONTH), today.get(Calendar.DAY_OF_MONTH)).apply {
+            datePicker.minDate = minimumDate.timeInMillis
+        }.show()
+    }
+
+    private fun scheduleCurrentMessage(scheduledAt: String) {
+        if (queueEditPending || sendBusy || queueEditItem != null) return
+        android.view.inputmethod.BaseInputConnection.removeComposingSpans(composerInput.text)
+        val text = composerInput.text.toString().trim()
+        if (text.isBlank() && selectedFiles.isEmpty()) return
+        val threadId = activeThreadId
+        val requestId = UUID.randomUUID().toString()
+        val payload = queuedPayload(text, requestId).put("scheduledAt", scheduledAt)
+        val outgoingFiles = selectedFiles.toList()
+        val outgoingScope = draftStorageKey()
+        val sendConnection = connectionGeneration
+        val sendEndpoint = endpoint
+        val sendToken = token
+        val sendMode = currentMode
+        setSendBusy(true)
+        (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.hideSoftInputFromWindow(composerInput.windowToken, 0)
+        composerInput.setText("")
+        selectedFiles.clear()
+        draftFilesByScope.remove(outgoingScope)
+        renderAttachmentStrip()
+
+        if (threadId == null) {
+            io.execute {
+                try {
+                    val created = RemoteApi(sendEndpoint, sendToken).post("/api/v1/codex/threads", JSONObject()
+                        .put("engine", sendMode)
+                        .put("request_id", requestId)
+                        .putOpt("model", payload.optString(if (sendMode == "codex") "model" else "claudeModel").takeIf { it.isNotBlank() })
+                        .putOpt("approval_policy", if (sendMode == "codex") payload.optString("approvalPolicy") else null))
+                    handler.post {
+                        val id = created.optString("id")
+                        val createdScope = outgoingScope.removeSuffix("_new") + "_$id"
+                        if (sendConnection != connectionGeneration) {
+                            restoreFailedMessage(outgoingScope, text, outgoingFiles)
+                            return@post
+                        }
+                        markKnownEmptyThread(id)
+                        threads = JSONArray().put(created).also { old ->
+                            for (index in 0 until threads.length()) if (threads.optJSONObject(index)?.optString("id") != id) old.put(threads.optJSONObject(index))
+                        }
+                        if (draftStorageKey() == outgoingScope) selectThread(created)
+                        schedulePayload(id, payload, outgoingFiles, createdScope, sendConnection, sendEndpoint, sendToken)
+                    }
+                } catch (error: Exception) {
+                    handler.post {
+                        restoreFailedMessage(outgoingScope, text, outgoingFiles)
+                        if (sendConnection == connectionGeneration) {
+                            setSendBusy(false)
+                            showStatus(error.message ?: "新建对话失败")
+                        }
+                    }
+                }
+            }
+        } else schedulePayload(threadId, payload, outgoingFiles, outgoingScope, sendConnection, sendEndpoint, sendToken)
+    }
+
+    private fun schedulePayload(threadId: String, payload: JSONObject, outgoingFiles: List<JSONObject>,
+                                outgoingScope: String, sendConnection: Long, sendEndpoint: String, sendToken: String) {
+        io.execute {
+            try {
+                val queuePath = "/api/v1/codex/queue/${RemoteApi.encodePath(threadId)}"
+                val result = RemoteApi(sendEndpoint, sendToken).post("$queuePath/schedule", payload)
+                handler.post {
+                    if (sendConnection != connectionGeneration) return@post
+                    if (activeThreadId == threadId) {
+                        queuedMessages = result.optJSONArray("queue") ?: JSONArray()
+                        renderQueue()
+                    }
+                    setSendBusy(false)
+                    refreshThreads(false)
+                    val time = scheduledTimeLabel(payload.optString("scheduledAt"))
+                    showStatus(if (time == null) "已加入定时发送" else "已加入定时发送 · $time")
+                }
+            } catch (error: Exception) {
+                handler.post {
+                    restoreFailedMessage(outgoingScope, payload.optString("text"), outgoingFiles)
+                    if (sendConnection == connectionGeneration) {
+                        setSendBusy(false)
+                        showStatus(error.message ?: "定时发送加入排队失败")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun scheduledTimeLabel(value: String?): String? = try {
+        if (value.isNullOrBlank()) null
+        else DateTimeFormatter.ofPattern("M/d HH:mm", Locale.getDefault())
+            .withZone(ZoneId.systemDefault())
+            .format(OffsetDateTime.parse(value).toInstant())
+    } catch (_: Exception) {
+        null
     }
 
     private fun sendCurrentMessage() {
@@ -7538,6 +7734,7 @@ class MainActivity : Activity() {
                     }
                     renderQueue()
                     updateSendButton()
+                    refreshScheduledThreadIds()
                     if (result.optBoolean("sent", false)) refreshActiveThread(false)
                     if (action == "send-now" && !result.optBoolean("sent", false)) {
                         val first = queuedMessages.optJSONObject(0)
@@ -10766,6 +10963,7 @@ class MainActivity : Activity() {
                     if (foreground) handler.post { refreshQueue(false) }
                     else backgroundQueueDirty = true
                 }
+                if (foreground) refreshScheduledThreadIds() else backgroundListDirty = true
             }
             "notification" -> handleNotificationEvent(event)
         }
@@ -11658,6 +11856,7 @@ class MainActivity : Activity() {
             "search" -> R.drawable.ic_android1_search
             "settings" -> R.drawable.ic_android1_settings
             "refresh" -> R.drawable.ic_android1_refresh
+            "schedule" -> R.drawable.ic_schedule
             "download" -> R.drawable.ic_android1_save
             "quote" -> R.drawable.ic_android1_file_add
             "arrow_up" -> R.drawable.ic_android1_arrow_up
@@ -11706,6 +11905,7 @@ class MainActivity : Activity() {
         "search" -> R.drawable.ic_search
         "settings" -> R.drawable.ic_settings
         "refresh" -> R.drawable.ic_refresh
+        "schedule" -> R.drawable.ic_schedule
         "download" -> R.drawable.ic_download
         "quote" -> R.drawable.ic_insert_conversation
         "arrow_up" -> R.drawable.ic_arrow_up

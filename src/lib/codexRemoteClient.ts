@@ -15,6 +15,59 @@ export interface CodexThread {
   canInterrupt?: boolean
 }
 
+export interface SSHServerConfig {
+  id: string
+  name: string
+  host: string
+  port: number
+  user: string
+  identityFile: string
+  authMethod: 'agent' | 'password' | 'privateKey'
+  hasCredential: boolean
+  enabled: boolean
+  allowInspect: boolean
+  allowExecute: boolean
+}
+
+export type SSHServerInput = Omit<SSHServerConfig, 'id' | 'hasCredential' | 'port'> & {
+  port: number | ''
+  password?: string
+  privateKey?: string
+  privateKeyPassphrase?: string
+}
+
+export interface MCPApprovalScope {
+  serverName: string
+  toolName: string
+}
+
+export interface MCPApprovalGrant {
+  id: string
+  scope: 'tool' | 'server'
+  serverName: string
+  toolName?: string
+}
+
+export interface SSHOperation {
+  id: string
+  turn_id: string | null
+  server_name: string
+  command: string
+  status: 'running' | 'completed' | 'failed'
+  output: string
+  exit_code: number | null
+  started_at: string
+  finished_at: string | null
+}
+
+export const maxWorkspaceUploadFileSize = 512 * 1024 * 1024
+
+export interface WorkspaceUploadProgress {
+  loaded: number
+  total: number
+  confirming: boolean
+}
+
 export interface CodexThreadDetails extends CodexThread {
   turns?: unknown[]
   historyContentRevision?: string
@@ -141,7 +194,7 @@ export interface CodexWorkspaceFile {
 
 export interface CodexWorkspaceImage {
   path: string
-  mediaType: CodexImageAttachment['mediaType']
+  mediaType: CodexImageAttachment['mediaType'] | 'image/avif' | 'image/heic' | 'image/heif' | 'image/bmp' | 'image/x-icon' | 'image/svg+xml'
   data: string
   size: number
 }
@@ -167,7 +220,8 @@ export interface RemoteEvent {
   fallbackReason?: string | null
   error?: string | null
   request_id?: string | number
-  decision?: 'accept' | 'decline' | 'cancel'
+  approvalScope?: MCPApprovalScope | null
+  decision?: 'accept' | 'decline' | 'cancel' | 'answered'
   message?: string
 }
 
@@ -194,6 +248,26 @@ export function isAmbiguousNetworkFailure(reason: unknown) {
 
 function wait(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
+}
+
+function responseApiError(statusCode: number, body: unknown, retryAfterHeader: string | null) {
+  const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : null
+  const validationDetail = Array.isArray(detail)
+    ? detail.map((item) => {
+      if (!item || typeof item !== 'object') return ''
+      const message = (item as Record<string, unknown>).msg
+      return typeof message === 'string' ? message : ''
+    }).filter(Boolean).join('；')
+    : ''
+  const message = typeof detail === 'string'
+    ? detail
+    : validationDetail || (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string' ? detail.message : `请求失败 (${statusCode})`)
+  const retryAfterSeconds = retryAfterHeader === null ? Number.NaN : Number(retryAfterHeader)
+  return new RemoteApiError(
+    message,
+    statusCode,
+    Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? Math.ceil(retryAfterSeconds) : undefined,
+  )
 }
 
 async function request<T>(
@@ -227,24 +301,7 @@ async function request<T>(
       })
       if (!response.ok) {
         const body = await response.json().catch(() => null)
-        const detail = body?.detail
-        const validationDetail = Array.isArray(detail)
-          ? detail.map((item) => {
-            if (!item || typeof item !== 'object') return ''
-            const message = (item as Record<string, unknown>).msg
-            return typeof message === 'string' ? message : ''
-          }).filter(Boolean).join('；')
-          : ''
-        const message = typeof detail === 'string'
-          ? detail
-          : validationDetail || (detail && typeof detail === 'object' && typeof detail.message === 'string' ? detail.message : `请求失败 (${response.status})`)
-        const retryAfterHeader = response.headers.get('Retry-After')
-        const retryAfterSeconds = retryAfterHeader === null ? Number.NaN : Number(retryAfterHeader)
-        throw new RemoteApiError(
-          message,
-          response.status,
-          Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? Math.ceil(retryAfterSeconds) : undefined,
-        )
+        throw responseApiError(response.status, body, response.headers.get('Retry-After'))
       }
       // Reading the body can fail after fetch has already received headers.
       // Await it here so those failures use the same safe retry path.
@@ -679,6 +736,29 @@ export const codexRemoteClient = {
   claudeStatus(token: string) {
     return request<{ available: boolean; error: string | null }>(token, '/api/v1/claude/status', undefined, { timeoutMs: 10_000, networkRetries: 0 })
   },
+  sshServers(token: string) {
+    return request<{ servers: SSHServerConfig[] }>(token, '/api/v1/ssh/servers')
+  },
+  saveSSHServer(token: string, value: SSHServerInput, id?: string) {
+    return request<SSHServerConfig>(token, `/api/v1/ssh/servers${id ? `/${encodeURIComponent(id)}` : ''}`, {
+      method: 'POST', body: JSON.stringify(value),
+    })
+  },
+  deleteSSHServer(token: string, id: string) {
+    return request<{ deleted: boolean }>(token, `/api/v1/ssh/servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
+  testSSHServer(token: string, id: string) {
+    return request<{ ok: boolean; detail: string }>(token, `/api/v1/ssh/servers/${encodeURIComponent(id)}/test`, { method: 'POST' }, { timeoutMs: 35_000 })
+  },
+  sshOperations(token: string, threadId: string) {
+    return request<{ operations: SSHOperation[] }>(token, `/api/v1/ssh/operations/${encodeURIComponent(threadId)}`, undefined, { timeoutMs: 10_000, networkRetries: 0 })
+  },
+  mcpApprovals(token: string) {
+    return request<{ approvals: MCPApprovalGrant[] }>(token, '/api/v1/mcp/approvals')
+  },
+  revokeMCPApproval(token: string, grantId: string) {
+    return request<{ deleted: boolean }>(token, `/api/v1/mcp/approvals/${encodeURIComponent(grantId)}`, { method: 'DELETE' })
+  },
   workspaceTree(token: string, cwd?: string, path = '', offset = 0) {
     const query = new URLSearchParams()
     if (cwd) query.set('cwd', cwd)
@@ -730,6 +810,41 @@ export const codexRemoteClient = {
       body: JSON.stringify({ cwd, paths, destination, mode }),
     })
   },
+  uploadWorkspaceFile(token: string, cwd: string | undefined, destination: string, file: File, onProgress?: (progress: WorkspaceUploadProgress) => void) {
+    const query = new URLSearchParams({ destination, name: file.name })
+    if (cwd) query.set('cwd', cwd)
+    return new Promise<CodexWorkspaceEntry>((resolve, reject) => {
+      const upload = new XMLHttpRequest()
+      upload.open('POST', `/api/v1/codex/workspace/upload?${query.toString()}`)
+      upload.timeout = 10 * 60_000
+      upload.setRequestHeader('Authorization', `Bearer ${token}`)
+      upload.setRequestHeader('Content-Type', 'application/octet-stream')
+      upload.upload.onprogress = (event) => {
+        onProgress?.({ loaded: Math.min(event.loaded, file.size), total: file.size, confirming: false })
+      }
+      upload.upload.onload = () => {
+        onProgress?.({ loaded: file.size, total: file.size, confirming: true })
+      }
+      upload.onload = () => {
+        let body: unknown = null
+        try {
+          body = JSON.parse(upload.responseText)
+        } catch {
+          // An error response may not contain JSON; show its HTTP status below.
+        }
+        if (upload.status >= 200 && upload.status < 300) {
+          if (body === null) reject(new Error('服务器返回无效响应，上传结果未确认'))
+          else resolve(body as CodexWorkspaceEntry)
+        } else {
+          reject(responseApiError(upload.status, body, upload.getResponseHeader('Retry-After')))
+        }
+      }
+      upload.onerror = () => reject(new Error('网络中断，文件上传失败'))
+      upload.ontimeout = () => reject(new Error('文件上传超时，请检查网络后重试'))
+      upload.onabort = () => reject(new Error('文件上传已取消'))
+      upload.send(file)
+    })
+  },
   threads(token: string, force = false) {
     const pending = threadListRequests.get(token)
     if (pending) return pending
@@ -773,6 +888,9 @@ export const codexRemoteClient = {
   },
   queuedMessages(token: string, threadId: string) {
     return request<{ queue: CodexQueuedMessage[] }>(token, `/api/v1/codex/queue/${encodeURIComponent(threadId)}`)
+  },
+  scheduledThreadIds(token: string) {
+    return request<{ thread_ids: string[] }>(token, '/api/v1/codex/queue/scheduled-thread-ids')
   },
   submitMessage(token: string, threadId: string, message: CodexQueuedMessage) {
     return request<{ queue: CodexQueuedMessage[]; sent: boolean }>(token, `/api/v1/codex/queue/${encodeURIComponent(threadId)}/submit`, {
@@ -1089,8 +1207,8 @@ export const codexRemoteClient = {
     return {
       checkConnection,
       subscribeThread,
-      respondToApproval(requestId: string | number, decision: 'accept' | 'decline' | 'cancel') {
-        return send({ type: 'approval.response', request_id: requestId, decision })
+      respondToApproval(requestId: string | number, response: 'accept' | 'decline' | 'cancel' | Record<string, unknown>, remember?: 'tool' | 'server') {
+        return send({ type: 'approval.response', request_id: requestId, ...(typeof response === 'string' ? { decision: response } : { response }), ...(remember ? { remember } : {}) })
       },
       close() {
         stopped = true

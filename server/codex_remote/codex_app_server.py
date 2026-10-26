@@ -11,6 +11,7 @@ import sqlite3
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import uuid
 from contextlib import closing, suppress
@@ -21,6 +22,8 @@ from typing import Any, Literal
 from watchfiles import Change, DefaultFilter, awatch
 from websockets.asyncio.client import connect as websocket_connect
 from .codex_history import CodexHistoryStore
+from .remote_ssh import SSHJournal
+from .mcp_approvals import MCPApprovalError, MCPApprovalStore, mcp_tool_confirmation
 
 logger = logging.getLogger(__name__)
 _APP_SERVER_MAX_MESSAGE_SIZE = 256 * 1024 * 1024
@@ -309,6 +312,9 @@ class CodexAppServer:
         self._pending: dict[str | int, asyncio.Future[dict[str, Any]]] = {}
         self._server_requests: dict[str | int, dict[str, Any]] = {}
         self._active_turn_ids: dict[str, str] = {}
+        self._ssh_config_path: Path | None = None
+        self._ssh_journal: SSHJournal | None = None
+        self._mcp_approval_store: MCPApprovalStore | None = None
         # thread/start creates an in-memory thread before its first rollout
         # exists. Such a thread can accept turn/start but not thread/resume.
         self._fresh_thread_cwds: dict[str, Path] = {}
@@ -338,6 +344,28 @@ class CodexAppServer:
         self._fallback_reason: str | None = None
         self._recent_stderr: list[str] = []
         self._history = CodexHistoryStore(self._history_home)
+
+    def enable_ssh_mcp(self, config_path: Path, journal: SSHJournal) -> None:
+        self._ssh_config_path = config_path
+        self._ssh_journal = journal
+
+    def enable_mcp_approvals(self, store: MCPApprovalStore) -> None:
+        self._mcp_approval_store = store
+
+    def _ssh_mcp_config(self, context: str) -> dict[str, Any]:
+        assert self._ssh_config_path is not None and self._ssh_journal is not None
+        package_parent = str(Path(__file__).resolve().parent.parent)
+        python_path = os.pathsep.join(filter(None, (package_parent, os.environ.get("PYTHONPATH", ""))))
+        return {"mcp_servers": {"code_remote_ssh": {
+            "command": sys.executable,
+            "args": ["-m", "codex_remote.remote_ssh"],
+            "env": {
+                "PYTHONPATH": python_path,
+                "CODE_REMOTE_SSH_CONFIG": str(self._ssh_config_path),
+                "CODE_REMOTE_SSH_JOURNAL": str(self._ssh_journal.path),
+                "CODE_REMOTE_SSH_CONTEXT": context,
+            },
+        }}}
 
     @property
     def connected(self) -> bool:
@@ -371,11 +399,14 @@ class CodexAppServer:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._subscribers.add(queue)
         for request_id, request in self._server_requests.items():
+            params = request.get("params", {})
+            approval_scope = mcp_tool_confirmation(params) if request.get("method") == "mcpServer/elicitation/request" else None
             queue.put_nowait({
                 "type": "server_request",
                 "request_id": request_id,
                 "method": request.get("method"),
-                "params": request.get("params", {}),
+                "params": params,
+                "approvalScope": approval_scope,
             })
         return queue
 
@@ -736,6 +767,9 @@ class CodexAppServer:
             "cwd": str(cwd or self.workspace),
             "serviceName": "codex_remote_web",
         }
+        ssh_context = uuid.uuid4().hex if self._ssh_journal else None
+        if ssh_context:
+            params["config"] = self._ssh_mcp_config(ssh_context)
         if model:
             params["model"] = model
         if approval_policy:
@@ -750,6 +784,8 @@ class CodexAppServer:
             thread_cwd = str(cwd or self.workspace)
         self._fresh_thread_cwds[thread["id"]] = Path(thread_cwd)
         self._loaded_thread_workspaces[thread["id"]] = Path(thread_cwd).expanduser().resolve()
+        if ssh_context and self._ssh_journal:
+            self._ssh_journal.register_context(ssh_context, thread["id"])
         return {**thread, "cwd": thread_cwd}
 
     async def resume_thread(self, thread_id: str, cwd: Path | None = None) -> dict[str, Any]:
@@ -759,12 +795,17 @@ class CodexAppServer:
         ):
             raise CodexRuntimeError("本机 Codex 历史数据库没有该对话，无法在隔离运行时中恢复。")
         params: dict[str, Any] = {"threadId": thread_id}
+        ssh_context = uuid.uuid4().hex if self._ssh_journal else None
+        if ssh_context:
+            params["config"] = self._ssh_mcp_config(ssh_context)
         if cwd is not None:
             params["cwd"] = str(cwd)
         result = await self.request("thread/resume", params)
         thread = result.get("thread")
         if not isinstance(thread, dict):
             raise CodexRuntimeError("Codex 无法恢复该对话")
+        if ssh_context and self._ssh_journal:
+            self._ssh_journal.register_context(ssh_context, thread_id)
         thread_cwd = thread.get("cwd")
         if not isinstance(thread_cwd, str) or not thread_cwd.strip():
             thread_cwd = str(cwd or self.workspace)
@@ -934,6 +975,8 @@ class CodexAppServer:
             completed = isinstance(turn, dict) and turn.get("status") in {"completed", "interrupted", "failed"}
             if turn_id and not completed and self._last_completed_turn_ids.get(thread_id) != turn_id:
                 self._active_turn_ids[thread_id] = turn_id
+                if self._ssh_journal:
+                    self._ssh_journal.set_active_turn(thread_id, turn_id)
             if not pending_start.done():
                 pending_start.set_result(turn_id)
             return result
@@ -1053,23 +1096,77 @@ class CodexAppServer:
         })
         await self.notify_threads_changed()
 
-    async def answer_server_request(self, request_id: str | int, decision: str) -> None:
-        if decision not in {"accept", "decline", "cancel"}:
-            raise CodexRuntimeError("不支持的审批操作")
-        request = self._server_requests.pop(request_id, None)
+    async def answer_server_request(
+        self, request_id: str | int, response: str | dict[str, Any], *, remember: str | None = None,
+    ) -> None:
+        request = self._server_requests.get(request_id)
         if request is None:
             raise CodexRuntimeError("该审批请求已过期或已处理")
+        method = request.get("method")
+        params = request.get("params") if isinstance(request.get("params"), dict) else {}
+        approval_scope = mcp_tool_confirmation(params) if method == "mcpServer/elicitation/request" else None
+        if remember is not None and (remember not in {"tool", "server"} or approval_scope is None
+                                     or not isinstance(response, dict) or response.get("action") != "accept"
+                                     or response.get("content") != {} or self._mcp_approval_store is None):
+            raise CodexRuntimeError("这项请求不支持始终允许")
+        if method == "mcpServer/elicitation/request":
+            action = response.get("action") if isinstance(response, dict) else None
+            if not isinstance(action, str) or action not in {"accept", "decline", "cancel"}:
+                raise CodexRuntimeError("MCP 授权答复无效")
+            if action == "accept":
+                if params.get("mode") not in {"form", "openai/form", "openaiForm"}:
+                    raise CodexRuntimeError("此 MCP 授权类型无法在网页确认")
+                content = response.get("content")
+                if not isinstance(content, dict):
+                    raise CodexRuntimeError("MCP 授权内容无效")
+                result = {"action": action, "content": content}
+            else:
+                result = {"action": action}
+            decision = action
+        elif method == "item/tool/requestUserInput":
+            answers = response.get("answers") if isinstance(response, dict) else None
+            questions = params.get("questions")
+            if not isinstance(answers, dict) or not isinstance(questions, list) or not questions:
+                raise CodexRuntimeError("工具提问答复无效")
+            if not answers:
+                result = {"answers": {}}
+                decision = "cancel"
+            else:
+                for question in questions:
+                    if not isinstance(question, dict) or not isinstance(question.get("id"), str):
+                        raise CodexRuntimeError("工具提问格式无效")
+                    answer = answers.get(question["id"])
+                    values = answer.get("answers") if isinstance(answer, dict) else None
+                    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], str) or not values[0].strip():
+                        raise CodexRuntimeError("请回答每个工具问题")
+                    options = question.get("options")
+                    labels = {option["label"] for option in options
+                              if isinstance(option, dict) and isinstance(option.get("label"), str)} if isinstance(options, list) else set()
+                    if labels and values[0] not in labels and question.get("isOther") is not True:
+                        raise CodexRuntimeError("工具问题的选项无效")
+                result = {"answers": {question["id"]: answers[question["id"]] for question in questions}}
+                decision = "answered"
+        else:
+            decision = response if isinstance(response, str) else response.get("decision") if isinstance(response, dict) else None
+            if not isinstance(decision, str) or decision not in {"accept", "decline", "cancel"}:
+                raise CodexRuntimeError("不支持的审批操作")
+            result = {"decision": decision}
+        if remember is not None and approval_scope is not None and self._mcp_approval_store is not None:
+            try:
+                self._mcp_approval_store.add(approval_scope["serverName"], approval_scope["toolName"], remember)
+            except (MCPApprovalError, OSError) as error:
+                raise CodexRuntimeError("保存始终允许失败；本次请求尚未批准。") from error
+        self._server_requests.pop(request_id, None)
         try:
-            await self._write({"id": request_id, "result": {"decision": decision}})
+            await self._write({"id": request_id, "result": result})
         except Exception:
             self._server_requests.setdefault(request_id, request)
             raise
-        params = request.get("params") if isinstance(request, dict) else None
         await self._emit({
             "type": "server_request.resolved",
             "request_id": request_id,
             "decision": decision,
-            "threadId": params.get("threadId") if isinstance(params, dict) else None,
+            "threadId": params.get("threadId"),
         })
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -1765,9 +1862,12 @@ class CodexAppServer:
             if method not in {
                 "item/commandExecution/requestApproval",
                 "item/fileChange/requestApproval",
+                "item/tool/requestUserInput",
+                "mcpServer/elicitation/request",
                 "execCommandApproval",
                 "applyPatchApproval",
             }:
+                logger.warning("Unsupported Codex server request: %s", method)
                 await self._write({
                     "id": request_id,
                     "error": {"code": -32601, "message": "This Code Remote client does not support this request."},
@@ -1783,12 +1883,21 @@ class CodexAppServer:
                                       if active_turn_id == turn_id), None)
             if isinstance(thread_id, str) and request_params.get("threadId") != thread_id:
                 request_params = {**request_params, "threadId": thread_id}
+            approval_scope = mcp_tool_confirmation(request_params) if method == "mcpServer/elicitation/request" else None
             self._server_requests[request_id] = {**message, "params": request_params}
+            if approval_scope is not None and self._mcp_approval_store is not None:
+                try:
+                    if self._mcp_approval_store.allows(approval_scope["serverName"], approval_scope["toolName"]):
+                        await self.answer_server_request(request_id, {"action": "accept", "content": {}})
+                        return
+                except (CodexRuntimeError, MCPApprovalError, OSError) as error:
+                    logger.warning("Could not auto-approve MCP tool request: %s", error)
             await self._emit({
                 "type": "server_request",
                 "request_id": request_id,
                 "method": method,
                 "params": request_params,
+                "approvalScope": approval_scope,
             })
         else:
             params = message.get("params", {})
@@ -1816,6 +1925,8 @@ class CodexAppServer:
             completed_turn_id: str | None = turn_id
             if method == "turn/started" and thread_id and turn_id:
                 self._active_turn_ids[thread_id] = turn_id
+                if self._ssh_journal:
+                    self._ssh_journal.set_active_turn(thread_id, turn_id)
                 pending_start = self._pending_turn_starts.get(thread_id)
                 if pending_start and not pending_start.done():
                     pending_start.set_result(turn_id)
@@ -1829,6 +1940,8 @@ class CodexAppServer:
                         completed_thread_id = None
                     if self._active_turn_ids.get(thread_id) == turn_id:
                         self._active_turn_ids.pop(thread_id, None)
+                        if self._ssh_journal:
+                            self._ssh_journal.set_active_turn(thread_id, None)
                 elif thread_id:
                     completed_turn_id = self._active_turn_ids.pop(thread_id, None)
                     if completed_turn_id:

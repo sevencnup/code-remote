@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useReducer, useRef, useState, type SetStateAction } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useReducer, useRef, useState, type SetStateAction } from 'react'
 import {
   codexRemoteClient,
   isAmbiguousNetworkFailure,
@@ -14,6 +14,7 @@ import {
   type CodexModel,
   type CodexApprovalPolicy,
   type CodexRuntime,
+  type MCPApprovalScope,
   type CodexThread,
   type CodexThreadDetails,
   type RemoteEvent,
@@ -33,6 +34,7 @@ interface ApprovalRequest {
   requestId: string | number
   method: string
   params: Record<string, unknown>
+  approvalScope?: MCPApprovalScope | null
 }
 
 export interface CodexActivity {
@@ -1466,6 +1468,7 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
   const [queuedMessagesByThread, setQueuedMessagesByThread] = useState<QueuedMessagesByThread>({})
   const [serverQueuedMessagesByThread, setServerQueuedMessagesByThread] = useState<QueuedMessagesByThread>({})
   const [pendingSubmittedByThread, setPendingSubmittedByThread] = useState<QueuedMessagesByThread>({})
+  const [queueRevision, setQueueRevision] = useState(0)
   const serverQueuedMessagesByThreadRef = useRef<QueuedMessagesByThread>({})
   const serverQueueFetchVersion = useRef(new Map<string, number>())
   const pendingServerQueueRemovals = useRef(new Map<string, Set<string>>())
@@ -1579,6 +1582,7 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
   const applyServerQueueResponse = useCallback((threadId: string, queue: QueuedTurnPayload[]) => {
     serverQueueFetchVersion.current.set(threadId, (serverQueueFetchVersion.current.get(threadId) ?? 0) + 1)
     publishServerQueue(threadId, queue)
+    setQueueRevision((revision) => revision + 1)
   }, [publishServerQueue])
 
   const refreshServerQueue = useCallback(async (threadId: string) => {
@@ -3320,6 +3324,7 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
   const handleEvent = useCallback((event: RemoteEvent) => {
     if (handedOffRef.current && event.type !== 'connection') return
     if (event.type === 'remote.queue.changed') {
+      if (persistActiveThread) setQueueRevision((revision) => revision + 1)
       if (event.threadId && event.threadId === activeThreadId.current) void refreshServerQueue(event.threadId)
       return
     }
@@ -3387,10 +3392,12 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
       const requestMethod = event.method ?? ''
       const supportedApproval = requestMethod === 'item/commandExecution/requestApproval'
         || requestMethod === 'item/fileChange/requestApproval'
+        || requestMethod === 'item/tool/requestUserInput'
+        || requestMethod === 'mcpServer/elicitation/request'
         || requestMethod === 'execCommandApproval'
         || requestMethod === 'applyPatchApproval'
       if (supportedApproval && (typeof event.request_id === 'string' || typeof event.request_id === 'number')) {
-        setApproval({ requestId: event.request_id, method: requestMethod, params: event.params ?? {} })
+        setApproval({ requestId: event.request_id, method: requestMethod, params: event.params ?? {}, approvalScope: event.approvalScope })
       }
       return
     }
@@ -4604,11 +4611,10 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
     }
   }, [handoffInProgress, onUnauthorized, refreshModels, refreshThreads, restoreActiveThread, setConnectionState, setHandoffState, token])
 
-  const respondToApproval = useCallback((decision: 'accept' | 'decline' | 'cancel') => {
+  const respondToApproval = useCallback((response: 'accept' | 'decline' | 'cancel' | Record<string, unknown>, remember?: 'tool' | 'server') => {
     if (!approval) return false
-    const sent = socketRef.current?.respondToApproval(approval.requestId, decision) ?? false
-    if (sent) setApproval(null)
-    else setError('连接断开，审批没有送达')
+    const sent = socketRef.current?.respondToApproval(approval.requestId, response, remember) ?? false
+    if (!sent) setError('连接断开，审批没有送达')
     return sent
   }, [approval])
 
@@ -4643,7 +4649,13 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
     }
   }, [onUnauthorized, token])
 
-  return {
+  const serverQueuedMessages = activeThread ? serverQueuedMessagesByThread[activeThread.id] ?? emptyQueuedMessages : emptyQueuedMessages
+  const pendingSubmittedMessages = activeThread ? pendingSubmittedByThread[activeThread.id] ?? emptyQueuedMessages : emptyQueuedMessages
+  const queuedMessages = useMemo(() => mergePendingQueuedMessages(serverQueuedMessages, pendingSubmittedMessages), [serverQueuedMessages, pendingSubmittedMessages])
+
+  // These hooks share a page component across panes. Preserve the controller
+  // identity when only another pane received a streaming update.
+  return useMemo(() => ({
     connection,
     runtime,
     threads,
@@ -4651,10 +4663,8 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
     activeThread,
     activeEngine,
     messages,
-    queuedMessages: activeThread ? mergePendingQueuedMessages(
-      serverQueuedMessagesByThread[activeThread.id] ?? emptyQueuedMessages,
-      pendingSubmittedByThread[activeThread.id] ?? emptyQueuedMessages,
-    ) : emptyQueuedMessages,
+    queuedMessages,
+    queueRevision,
     pinRevision,
     isRunning,
     runningTurnId,
@@ -4696,7 +4706,21 @@ export function useCodexRemote(token: string, onUnauthorized: () => void, option
     clearThreadCompletion,
     refreshActiveThread,
     updateApprovalPolicy,
-  }
+  }), [
+    connection, runtime, threads, models, activeThread, activeEngine, messages,
+    queuedMessages, queueRevision, pinRevision, isRunning, runningTurnId,
+    isInterrupting, turnStartedAt, activity, fileChangesByTurn, operationsByTurn,
+    activityTimelineByTurn, writerConflict, handedOff, handoffInProgress,
+    loadingHistory, error, updatingApprovalPolicy, approval, completedThreadIds,
+    latestThreadCompletion, refreshThreads, upsertThread, removeDeletedThread,
+    renameThread, bindThreadWorkspace, refreshModels, selectThread, createThread,
+    sendMessage, stopInterruptedThread, uploadPdfAttachment,
+    sharedSendQueuedMessageNow, sendQueuedMessageNow, sharedBeginQueuedEdit,
+    beginEditQueuedMessage, sharedUpdateQueuedMessage, updateQueuedMessage,
+    sharedEndQueuedEdit, endEditQueuedMessage, sharedRemoveQueuedMessage,
+    removeQueuedMessage, interrupt, handoffToLocalCodex, reclaimForRemote,
+    respondToApproval, clearThreadCompletion, refreshActiveThread, updateApprovalPolicy,
+  ])
 }
 
 export type CodexRemoteController = ReturnType<typeof useCodexRemote>
