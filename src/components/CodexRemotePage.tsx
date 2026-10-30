@@ -56,7 +56,7 @@ import { isRunnableScriptPath } from '../lib/terminalPathCommand'
 import { forgetOpenTerminalThread, readOpenTerminalThread, rememberOpenTerminalThread } from '../lib/terminalScreenMemory'
 import { clipboardTableToMarkdown } from '../lib/clipboardTable'
 import { parseMarkdownTableBlock } from '../lib/markdownTableParser.mjs'
-import { httpMessageLinks, splitMessageInlineLinks } from '../lib/messageInlineLinks'
+import { splitMessageInlineLinks } from '../lib/messageInlineLinks'
 import { assistantChoiceStartIndex, formatAssistantChoiceReply, parseAssistantChoiceContent, type MessageChoiceGroup } from '../lib/messageChoices'
 import { groupSidebarThreads } from '../lib/sidebarThreadGroups.mjs'
 import { filterSidebarThreads } from '../lib/sidebarThreadFilter.mjs'
@@ -68,7 +68,7 @@ import { maxImagesPerTurn } from '../lib/imageAttachmentRules'
 import { beginMobileGlobalBackGesture, beginMobilePanelGesture, mobileSidebarBackdropOpacity, mobileSidebarDragOffset, mobileWorkspaceDragOffset, resolveMobilePanelGesture, shouldOpenMobileSidebarAfterDrag, shouldOpenMobileWorkspaceAfterDrag, type MobilePanelGestureStart } from '../lib/mobilePanelGestures'
 import { earlierMessageWindow, recentMessageWindow, visibleMessageStart } from '../lib/messageWindow'
 import { maxConcurrentPaneCount, readPersistedPaneLayout, savePersistedPaneLayout } from '../lib/paneLayout'
-import { isCompactThemeBackgroundImage, normalizeBackgroundPosition, normalizeBackgroundZoom, normalizeFontSizeAdjustment, normalizeHexColor, normalizeTransparency, themeRootStyle, type AppTheme, type ThemePreferences } from '../lib/themePreferences'
+import { isCompactThemeBackgroundImage, letterSpacingStyle, normalizeBackgroundPosition, normalizeBackgroundZoom, normalizeFontSizeAdjustment, normalizeHexColor, normalizeLetterSpacingPercent, normalizeTransparency, themeRootStyle, type AppTheme, type ThemePreferences } from '../lib/themePreferences'
 import { canRequestSystemNotifications, requestSystemNotificationPermission, sendSystemNotification, type AndroidNotificationBridge } from '../lib/systemNotifications'
 import { createThreadTranscript, threadTranscriptFilename } from '../lib/threadTranscript'
 import { createWorkspaceSelectionDocument, isWorkspaceSelectionDocument, numberWorkspaceSelectionDocument, sameWorkspaceSelectionDocument, workspaceSelectionMenuPosition, workspaceTextSelectionLineRange, type WorkspaceSelectionBounds } from '../lib/workspaceSelection'
@@ -2575,7 +2575,9 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
   const viewStateCache = useRef(new Map<string, WorkspaceExplorerViewState>())
   const pendingScrollRestore = useRef<number | null>(null)
   const browsingRoot = manualRoot || cwd
-  const portalThemeStyle = theme === 'custom' ? themeRootStyle(themePreferences) : undefined
+  const portalThemeStyle = theme === 'custom'
+    ? themeRootStyle(themePreferences)
+    : letterSpacingStyle(themePreferences)
   const scopeKey = `${threadId ?? 'new'}:${cwd ?? ''}:${browsingRoot ?? ''}`
   const activeScopeKey = useRef(scopeKey)
   activeScopeKey.current = scopeKey
@@ -3634,7 +3636,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
         document.body,
       ) : null}
       {mutationDialog && typeof document !== 'undefined' ? createPortal(
-        <div className={`thread-rename-backdrop remote-shell--theme-${theme}`} role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) closeWorkspaceMutation() }}>
+        <div className={`thread-rename-backdrop remote-shell--theme-${theme}`} style={portalThemeStyle} role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) closeWorkspaceMutation() }}>
           <form className={`thread-rename-dialog workspace-mutation-dialog${mutationDialog.action === 'delete' ? ' thread-delete-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="workspace-mutation-title" onSubmit={(event) => { void submitWorkspaceMutation(event) }} onPointerDown={(event) => event.stopPropagation()}>
             <div className="thread-rename-dialog__heading">
               {mutationDialog.action === 'delete' ? (
@@ -5946,7 +5948,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
       {paneNotice ? <div className="pane-limit-notice" role="status">{paneNotice}</div> : null}
       <aside ref={sidebarPanel} className={'remote-sidebar' + (sidebarOpen ? ' remote-sidebar--open' : '') + (sidebarDragging ? ' remote-sidebar--dragging' : '')} aria-label="聊天记录" onTransitionEnd={(event) => { if (event.target === event.currentTarget && event.propertyName === 'transform' && !sidebarDragging) event.currentTarget.style.removeProperty('--sidebar-drag-offset') }}>
         <div className="remote-sidebar__heading">
-          <div className="remote-brand"><img className="remote-brand__logo" src="/code-remote.webp" alt="" /><span className="remote-brand__copy"><strong>Code Remote</strong><small>代码助手远程工作台</small></span></div>
+          <div className="remote-brand"><img className="remote-brand__logo" src="/code-remote.png" alt="" /><span className="remote-brand__copy"><strong>Code Remote</strong><small>代码助手远程工作台</small></span></div>
           <button className="icon-button remote-sidebar__collapse" type="button" aria-label={sidebarCollapsed ? '展开对话栏' : '收窄对话栏'} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? '展开对话栏' : '收窄对话栏'} onClick={() => { if (!sidebarCollapsed) { setSidebarSearch(''); setSidebarSelectionMode(false); setSelectedSidebarThreadIds(new Set()) } setSidebarCollapsed((collapsed) => !collapsed) }}>
             {sidebarCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
           </button>
@@ -6328,6 +6330,7 @@ function ThemeSettingsPanel({ token, preferences, onChange, onClose, chatShortcu
     positionY: number
   } | null>(null)
   const fontSizeAdjustment = normalizeFontSizeAdjustment(preferences.fontSizeAdjustment)
+  const letterSpacingPercent = normalizeLetterSpacingPercent(preferences.letterSpacingPercent)
   const themeOptions: Array<{ value: AppTheme; label: string; description: string; previewClass: string }> = [
     { value: 'light', label: '白色', description: '清爽明亮', previewClass: 'theme-option__preview--light' },
     { value: 'dark', label: '黑色', description: '低光阅读', previewClass: 'theme-option__preview--dark' },
@@ -6640,10 +6643,14 @@ function ThemeSettingsPanel({ token, preferences, onChange, onClose, chatShortcu
 
         <section className="theme-settings-card">
           <div className="theme-settings-card__heading"><div><h2><PixelThemeIcon name="display" theme={preferences.theme} />显示</h2><p>调整当前浏览器中的界面阅读大小。</p></div><span className="theme-settings-card__badge">即时预览</span></div>
-          <div className="theme-display-controls">
+          <div className="theme-display-controls theme-display-controls--typography">
             <label className="theme-control-row theme-control-row--stacked">
               <span><strong>字体大小</strong><small>同时调整聊天、输入框、侧栏、文件区和设置页。</small></span>
               <span className="theme-range-input"><input type="range" min="-3" max="6" step="1" value={fontSizeAdjustment} onChange={(event) => onChange({ ...preferences, fontSizeAdjustment: normalizeFontSizeAdjustment(Number(event.target.value)) })} aria-label="全局字体大小" /><output>{fontSizeAdjustment === 0 ? '标准' : `${fontSizeAdjustment > 0 ? '+' : ''}${fontSizeAdjustment} px`}</output></span>
+            </label>
+            <label className="theme-control-row theme-control-row--stacked">
+              <span><strong>字间距</strong><small>同时调整聊天、输入框、侧栏、文件区和设置页的普通文字。</small></span>
+              <span className="theme-range-input"><input type="range" min="0" max="8" step="1" value={letterSpacingPercent} onChange={(event) => onChange({ ...preferences, letterSpacingPercent: normalizeLetterSpacingPercent(Number(event.target.value)) })} aria-label="全局字间距" /><output>{letterSpacingPercent}%</output></span>
             </label>
           </div>
         </section>
@@ -6705,13 +6712,13 @@ function stripStandaloneSeparators(text: string) {
   return text.replace(/^[\t ]*(?:[-_\u2500\u2501\u2550\u2014][\t ]*){3,}(?:\r?\n|$)/gm, '')
 }
 
-function renderMessageInlineLinks(value: string, keyPrefix: string): ReactNode {
-  return splitMessageInlineLinks(value).map((part, index) => part.type === 'link'
+function renderMessageInlineLinks(value: string, keyPrefix: string, preferWebUrlLabel: boolean): ReactNode {
+  return splitMessageInlineLinks(value, preferWebUrlLabel).map((part, index) => part.type === 'link'
     ? <a key={`${keyPrefix}-link-${index}`} href={part.href} target="_blank" rel="noopener noreferrer">{part.value}</a>
     : part.value)
 }
 
-function renderMessageText(value: string, keyPrefix: string): ReactNode[] {
+function renderMessageText(value: string, keyPrefix: string, preferWebUrlLabel: boolean): ReactNode[] {
   const lines = value.replace(/\r\n?/g, '\n').split('\n')
   const elements: ReactNode[] = []
   let plainLines: string[] = []
@@ -6722,7 +6729,7 @@ function renderMessageText(value: string, keyPrefix: string): ReactNode[] {
   const flushPlainText = () => {
     if (plainLines.length === 0) return
     const textKey = `${keyPrefix}-text-${plainIndex++}`
-    elements.push(<div className="chat-message__text" key={textKey}>{renderMessageInlineLinks(plainLines.join('\n'), textKey)}</div>)
+    elements.push(<div className="chat-message__text" key={textKey}>{renderMessageInlineLinks(plainLines.join('\n'), textKey, preferWebUrlLabel)}</div>)
     plainLines = []
   }
 
@@ -6739,10 +6746,10 @@ function renderMessageText(value: string, keyPrefix: string): ReactNode[] {
       <div className="chat-message__table-scroll" key={`${keyPrefix}-table-${tableIndex++}`}>
         <table className="chat-message__table">
           <thead>
-            <tr>{table.headers.map((cell, index) => <th key={index} scope="col" style={{ textAlign: table.alignments[index] }}>{renderMessageInlineLinks(cell, `${keyPrefix}-table-${tableIndex}-header-${index}`)}</th>)}</tr>
+            <tr>{table.headers.map((cell, index) => <th key={index} scope="col" style={{ textAlign: table.alignments[index] }}>{renderMessageInlineLinks(cell, `${keyPrefix}-table-${tableIndex}-header-${index}`, preferWebUrlLabel)}</th>)}</tr>
           </thead>
           <tbody>
-            {table.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, index) => <td key={index} style={{ textAlign: table.alignments[index] }}>{renderMessageInlineLinks(cell, `${keyPrefix}-table-${tableIndex}-row-${rowIndex}-cell-${index}`)}</td>)}</tr>)}
+            {table.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, index) => <td key={index} style={{ textAlign: table.alignments[index] }}>{renderMessageInlineLinks(cell, `${keyPrefix}-table-${tableIndex}-row-${rowIndex}-cell-${index}`, preferWebUrlLabel)}</td>)}</tr>)}
           </tbody>
         </table>
       </div>,
@@ -6754,13 +6761,7 @@ function renderMessageText(value: string, keyPrefix: string): ReactNode[] {
   return elements
 }
 
-const MessageContent = memo(function MessageContent({ text, hideStandaloneSeparators = false, showOnlyHttpLinks = false }: { text: string; hideStandaloneSeparators?: boolean; showOnlyHttpLinks?: boolean }) {
-  if (showOnlyHttpLinks) {
-    const links = httpMessageLinks(text)
-    return links.length > 0 ? <div className="chat-message__content">
-      {links.map((link, index) => <div className="chat-message__text" key={`${link}-${index}`}><a href={link} target="_blank" rel="noopener noreferrer">{link}</a></div>)}
-    </div> : null
-  }
+const MessageContent = memo(function MessageContent({ text, hideStandaloneSeparators = false, preferWebUrlLabel = false }: { text: string; hideStandaloneSeparators?: boolean; preferWebUrlLabel?: boolean }) {
   const codePattern = /```([^\n]*)\n([\s\S]*?)```/g
   const blocks: Array<{ type: 'text' | 'code'; value: string; language?: string }> = []
   let cursor = 0
@@ -6778,7 +6779,7 @@ const MessageContent = memo(function MessageContent({ text, hideStandaloneSepara
       {blocks.map((block, index) => {
         if (block.type === 'code') return <CodeBlock key={`code-${index}`} value={block.value} language={block.language} />
         const value = hideStandaloneSeparators ? stripStandaloneSeparators(block.value) : block.value
-        return value ? renderMessageText(value, `text-${index}`) : null
+        return value ? renderMessageText(value, `text-${index}`, preferWebUrlLabel) : null
       })}
     </div>
   )
@@ -7094,14 +7095,14 @@ function activityTimelineMatchesText(text: string, timeline: CodexActivityTimeli
   return offset === text.length
 }
 
-const ActivityTimelineContent = memo(function ActivityTimelineContent({ text, timeline, operations, fileChanges = [], onOpenFile, onOpenImage, showOnlyHttpLinks = false, streaming = false, messageId, choiceItemId, choicePromptText, choiceCard }: {
+const ActivityTimelineContent = memo(function ActivityTimelineContent({ text, timeline, operations, fileChanges = [], onOpenFile, onOpenImage, preferWebUrlLabel = false, streaming = false, messageId, choiceItemId, choicePromptText, choiceCard }: {
   text: string
   timeline: CodexActivityTimelineEntry[]
   operations: CodexOperation[]
   fileChanges?: CodexFileChange[]
   onOpenFile: (path: string, diff?: string) => void
   onOpenImage: (path: string) => void
-  showOnlyHttpLinks?: boolean
+  preferWebUrlLabel?: boolean
   streaming?: boolean
   messageId?: string
   choiceItemId?: string
@@ -7116,9 +7117,9 @@ const ActivityTimelineContent = memo(function ActivityTimelineContent({ text, ti
     const beforeChoiceText = choiceStart >= 0 ? text.slice(0, choiceStart).trim() : text
     const afterChoiceText = choiceStart >= 0 ? text.slice(choiceStart + choicePromptText!.length).trim() : ''
     return <div className="activity-timeline">
-      {beforeChoiceText ? <MessageContent text={beforeChoiceText} hideStandaloneSeparators showOnlyHttpLinks={showOnlyHttpLinks} /> : null}
+      {beforeChoiceText ? <MessageContent text={beforeChoiceText} hideStandaloneSeparators preferWebUrlLabel={preferWebUrlLabel} /> : null}
       {choiceCard}
-      {afterChoiceText ? <MessageContent text={afterChoiceText} hideStandaloneSeparators showOnlyHttpLinks={showOnlyHttpLinks} /> : null}
+      {afterChoiceText ? <MessageContent text={afterChoiceText} hideStandaloneSeparators preferWebUrlLabel={preferWebUrlLabel} /> : null}
       <OperationLog operations={operations} fileChanges={fileChanges} onOpenFile={onOpenFile} onOpenImage={onOpenImage} />
     </div>
   }
@@ -7129,7 +7130,7 @@ const ActivityTimelineContent = memo(function ActivityTimelineContent({ text, ti
   // there are no visible operations, splitting on those lengths only creates
   // a second block that makes one sentence appear to reflow between rows.
   if (!choiceCard && !timeline.some((entry) => entry.type === 'operation' && operationById.has(entry.operationId))) {
-    return text ? <MessageContent text={text} hideStandaloneSeparators showOnlyHttpLinks={showOnlyHttpLinks} /> : null
+    return text ? <MessageContent text={text} hideStandaloneSeparators preferWebUrlLabel={preferWebUrlLabel} /> : null
   }
   // A restored or streamed turn can retain message lengths from an older
   // snapshot. Never use those offsets to cut the current reply mid-sentence.
@@ -7179,7 +7180,7 @@ const ActivityTimelineContent = memo(function ActivityTimelineContent({ text, ti
   return (
     <div className="activity-timeline">
       {blocks.map((block) => block.type === 'message'
-        ? <MessageContent key={block.key} text={block.text} hideStandaloneSeparators showOnlyHttpLinks={showOnlyHttpLinks} />
+        ? <MessageContent key={block.key} text={block.text} hideStandaloneSeparators preferWebUrlLabel={preferWebUrlLabel} />
         : block.type === 'choice' ? <Fragment key={block.key}>{choiceCard}</Fragment>
         : <OperationLog
           key={block.key}
@@ -7337,7 +7338,7 @@ const MessageBubble = memo(function MessageBubble({ message, assistantName, oper
   const splitStructuredChoice = Boolean(choiceCard && structuredQuestions && !choiceInTimeline && promptStart >= 0
     && !activityTimeline.some((entry) => entry.type === 'operation'))
   const renderedText = choiceContent?.onlyChoices && choiceText === message.text ? '' : message.text
-  const showOnlyHttpLinks = useMemo(() => message.role === 'assistant' && httpMessageLinks(message.text).length > 0, [message.role, message.text])
+  const preferWebUrlLabel = message.role === 'assistant'
   const beforeChoiceText = splitStructuredChoice ? message.text.slice(0, promptStart).trim() : ''
   const afterChoiceText = splitStructuredChoice ? message.text.slice(promptStart + (message.choicePromptText?.length ?? 0)).trim() : ''
 
@@ -7353,12 +7354,12 @@ const MessageBubble = memo(function MessageBubble({ message, assistantName, oper
         {message.images?.length ? <div className="chat-message__images">{message.images.map((image, index) => <ImagePreviewButton key={`${image.name}-${index}`} src={image.previewUrl} name={image.name} />)}</div> : null}
         {message.documents?.map((document, index) => <div className="message-document" key={`${document.name}-${document.sourceFileId ?? index}`}><FileText size={15} /><span><strong>{document.name}</strong><small>{document.sourceFileId ? '原始文件 · Codex 读取原件' : `${document.charCount.toLocaleString()} 个字符`}</small></span></div>)}
         {splitStructuredChoice ? <>
-          {beforeChoiceText ? <MessageContent text={beforeChoiceText} hideStandaloneSeparators showOnlyHttpLinks={showOnlyHttpLinks} /> : null}
+          {beforeChoiceText ? <MessageContent text={beforeChoiceText} hideStandaloneSeparators preferWebUrlLabel={preferWebUrlLabel} /> : null}
           {choiceCard}
-          {afterChoiceText ? <MessageContent text={afterChoiceText} hideStandaloneSeparators showOnlyHttpLinks={showOnlyHttpLinks} /> : null}
+          {afterChoiceText ? <MessageContent text={afterChoiceText} hideStandaloneSeparators preferWebUrlLabel={preferWebUrlLabel} /> : null}
         </> : message.role === 'assistant' && (activityTimeline.length > 0 || message.streaming || message.id.startsWith('streaming-assistant-'))
-          ? <ActivityTimelineContent text={renderedText} timeline={activityTimeline} operations={showOperations ? operations : emptyOperations} fileChanges={fileChanges} onOpenFile={onOpenFile} onOpenImage={onOpenImage} showOnlyHttpLinks={showOnlyHttpLinks} streaming={message.streaming} messageId={message.id} choiceItemId={choiceInTimeline ? message.choiceItemId : undefined} choicePromptText={choiceInTimeline ? message.choicePromptText : undefined} choiceCard={choiceInTimeline ? choiceCard : undefined} />
-          : renderedText ? <MessageContent text={renderedText} hideStandaloneSeparators={message.role === 'assistant'} showOnlyHttpLinks={showOnlyHttpLinks} /> : null}
+          ? <ActivityTimelineContent text={renderedText} timeline={activityTimeline} operations={showOperations ? operations : emptyOperations} fileChanges={fileChanges} onOpenFile={onOpenFile} onOpenImage={onOpenImage} preferWebUrlLabel={preferWebUrlLabel} streaming={message.streaming} messageId={message.id} choiceItemId={choiceInTimeline ? message.choiceItemId : undefined} choicePromptText={choiceInTimeline ? message.choicePromptText : undefined} choiceCard={choiceInTimeline ? choiceCard : undefined} />
+          : renderedText ? <MessageContent text={renderedText} hideStandaloneSeparators={message.role === 'assistant'} preferWebUrlLabel={preferWebUrlLabel} /> : null}
         {message.role === 'assistant' ? copyAction : null}
         {showOperations && operations.length > 0 && activityTimeline.length === 0 && !message.streaming && !message.id.startsWith('streaming-assistant-') ? <OperationLog operations={operations} fileChanges={fileChanges} onOpenFile={onOpenFile} onOpenImage={onOpenImage} /> : null}
         {!choiceInTimeline && !splitStructuredChoice ? choiceCard : null}

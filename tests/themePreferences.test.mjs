@@ -26,6 +26,7 @@ const defaultPreferences = {
   customBackgroundPositionY: 50,
   customBackgroundZoom: 100,
   fontSizeAdjustment: 0,
+  letterSpacingPercent: 2,
   systemNotificationsEnabled: false,
 }
 
@@ -71,6 +72,7 @@ test('normalizes stored theme values and ignores invalid background images', asy
       customBackgroundPositionY: 50,
       customBackgroundZoom: 100,
       fontSizeAdjustment: 0,
+      letterSpacingPercent: 2,
       systemNotificationsEnabled: false,
     })
   })
@@ -91,6 +93,7 @@ test('round-trips saved theme preferences through local storage', async () => {
     customBackgroundPositionY: 62,
     customBackgroundZoom: 145,
     fontSizeAdjustment: 0,
+    letterSpacingPercent: 2,
     systemNotificationsEnabled: false,
   }
 
@@ -207,12 +210,17 @@ test('generates consistent global custom-theme CSS variables', () => {
     '--custom-theme-background-zoom': 1.5,
     '--custom-theme-background-image': 'linear-gradient(rgba(0, 0, 0, .2), rgba(0, 0, 0, .2)), url("data:image/png;base64,aGVsbG8=")',
     '--custom-theme-text-color': '#AABBCC',
+    '--custom-theme-send-circle': '#fff',
+    '--custom-theme-send-arrow': '#000',
+    '--custom-theme-send-disabled-circle': '#6f737a',
     '--custom-theme-surface': 'rgba(51, 102, 153, 0.38)',
     '--custom-theme-control': 'rgba(51, 102, 153, 0.58)',
     '--custom-theme-active': 'rgba(51, 102, 153, 0.24)',
     '--custom-theme-border': 'rgba(170, 187, 204, 0.32)',
     '--custom-theme-panel-blur': '8px',
     '--user-font-offset': '0px',
+    letterSpacing: '0.02em',
+    '--user-letter-spacing-delta': '0em',
   })
 })
 
