@@ -7,13 +7,64 @@ const source = await readFile(new URL('../src/lib/threadMessageMerge.ts', import
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
-const { deliveredQueuedMessageIdsFromHistory, insertRemoteUserMessage, legacyDuplicateQueuedMessageId, mightBeLegacyDuplicateQueuedMessage, preserveLocalQueuedMessages, reconcileDeliveredLocalMessage } = await import(
+const { deliveredQueuedMessageIdsFromHistory, historyMissingCurrentUserMessages, insertDeliveredLocalMessage, insertRemoteUserMessage, legacyDuplicateQueuedMessageId, mightBeLegacyDuplicateQueuedMessage, preserveLocalQueuedMessages, reconcileDeliveredLocalMessage, startsNewAssistantStreamSegment } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
 function userMessage(id, turnId, text, extra = {}) {
   return { id, role: 'user', turnId, text, createdAt: '2026-10-12T15:00:00.000Z', ...extra }
 }
+
+test('a socket answer splits the reply even while the local send is awaiting its HTTP receipt', () => {
+  const first = userMessage('first', 'turn-live', '连接服务器')
+  const oldReply = { ...first, id: 'old-reply', role: 'assistant', text: '运行 PowerShell', streaming: true }
+  const beforeSend = [first, oldReply]
+  const answer = userMessage('remote-user-answer', 'turn-live', '已经运行', { sourceItemId: 'answer' })
+  assert.equal(startsNewAssistantStreamSegment(beforeSend, answer), true)
+
+  const newReply = { ...oldReply, id: 'new-reply', text: 'SSH 已登录成功' }
+  const visible = [...insertRemoteUserMessage(beforeSend, answer), newReply]
+  const confirmed = insertDeliveredLocalMessage(visible, userMessage('queued-answer', 'turn-live', '已经运行'), new Set(['first', 'old-reply']))
+  assert.deepEqual(confirmed, visible)
+  assert.equal(startsNewAssistantStreamSegment(confirmed, answer), false)
+})
+
+test('an HTTP-first answer echo does not split or clear the next reply again', () => {
+  const first = userMessage('first', 'turn-live', '连接服务器')
+  const oldReply = { ...first, id: 'old-reply', role: 'assistant', text: '运行 PowerShell' }
+  const local = userMessage('queued-answer', 'turn-live', '已经运行')
+  const visible = insertDeliveredLocalMessage([first, oldReply], local, new Set(['first', 'old-reply']))
+  const newReply = { ...oldReply, id: 'new-reply', text: 'SSH 已登录成功', streaming: true }
+  visible.push(newReply)
+  const answer = userMessage('remote-user-answer', 'turn-live', '已经运行', { sourceItemId: 'answer' })
+  assert.equal(startsNewAssistantStreamSegment(visible, answer), false)
+  assert.deepEqual(insertRemoteUserMessage(visible, answer), [first, oldReply, answer, newReply])
+})
+
+test('history before an in-turn answer is rejected until the canonical answer is present', () => {
+  const first = userMessage('first', 'turn-live', '继续')
+  const oldReply = { ...first, id: 'old-reply', role: 'assistant', text: '请运行命令' }
+  const snapshot = [first, oldReply]
+  const local = userMessage('queued-answer', 'turn-live', '继续')
+  assert.equal(historyMissingCurrentUserMessages(snapshot, [...snapshot, local], 'turn-live'), true)
+  const canonical = userMessage('canonical-answer', 'turn-live', '继续')
+  assert.equal(historyMissingCurrentUserMessages([...snapshot, canonical], [...snapshot, local], 'turn-live'), false)
+  const live = { ...canonical, id: 'remote-user-canonical-answer', sourceItemId: canonical.id }
+  assert.equal(historyMissingCurrentUserMessages(snapshot, [...snapshot, live], 'turn-live'), true)
+  assert.equal(historyMissingCurrentUserMessages([...snapshot, canonical], [...snapshot, live], 'turn-live'), false)
+})
+
+test('a repeated answer with a new item ID starts a new segment', () => {
+  const first = userMessage('first', 'turn-live', '继续')
+  const answer = userMessage('remote-user-next', 'turn-live', '继续', { sourceItemId: 'next' })
+  assert.equal(startsNewAssistantStreamSegment([first], answer), true)
+})
+
+test('an old canonical item alias cannot swallow a later identical local answer', () => {
+  const old = userMessage('remote-user-old', 'turn-live', '继续', { sourceItemId: 'old' })
+  const local = userMessage('queued-new', 'turn-live', '继续')
+  assert.deepEqual(insertDeliveredLocalMessage([old], local, new Set(['old'])), [old, local])
+})
 
 test('does not duplicate the first optimistic message after history sync without a prior anchor', () => {
   const image = { name: 'screenshot.png', previewUrl: 'data:image/png;base64,abc123' }
