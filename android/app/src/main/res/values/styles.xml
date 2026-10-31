@@ -11,6 +11,7 @@
         <item name="android:colorAccent">#AABAFF</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+    <style name="AppTheme.Starting" parent="@style/AppTheme" />
     <style name="SidebarMenuAnimation">
         <item name="android:windowEnterAnimation">@anim/sidebar_menu_in</item>
         <item name="android:windowExitAnimation">@anim/sidebar_menu_out</item>

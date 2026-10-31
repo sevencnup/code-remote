@@ -1,4 +1,4 @@
-import { Fragment, forwardRef, lazy, memo, Suspense, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { Fragment, forwardRef, lazy, memo, Suspense, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ChangeEvent, type ClipboardEvent, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { isCompactLandscape, isMobileLayout, mobileLayoutChangedEvent, mobileLayoutMediaQuery } from '../lib/mobileLayout'
 import {
@@ -51,7 +51,7 @@ import {
 } from 'lucide-react'
 import { useCodexRemote, type CodexActivity, type CodexActivityTimelineEntry, type CodexFileChange, type CodexOperation, type CodexRemoteController, type CodexThreadCompletion, type QueuedMessageSendMode, type QueuedTurnMessage, type SelectThreadOptions } from '../hooks/useCodexRemote'
 import { codexRemoteClient, maxWorkspaceUploadFileSize, messagesFromThread, RemoteApiError, type ClaudeCodePermissionMode, type CodexApprovalPolicy, type CodexDocumentAttachment, type CodexImageAttachment, type CodexMessage, type CodexModel, type CodexThread, type CodexWorkspaceEntry, type CodexWorkspaceFile, type CodexWorkspaceImage, type CodexWorkspaceTree, type MCPApprovalGrant } from '../lib/codexRemoteClient'
-import { copyTextAndImagesToClipboard, copyTextToClipboard, embeddedImageFilesFromClipboardHtml } from '../lib/clipboard'
+import { copyTextAndImagesToClipboard, copyTextToClipboard, recoverCopiedMessageTextFromImagePaste, richMessageContentFromClipboardHtml } from '../lib/clipboard'
 import { isRunnableScriptPath } from '../lib/terminalPathCommand'
 import { forgetOpenTerminalThread, readOpenTerminalThread, rememberOpenTerminalThread } from '../lib/terminalScreenMemory'
 import { clipboardTableToMarkdown } from '../lib/clipboardTable'
@@ -115,6 +115,40 @@ type ComposerHeightMemory = Partial<Record<ChatEngine, { height: number; manuall
 
 function EngineBrandIcon({ engine, size = 16 }: { engine: ChatEngine; size?: number }) {
   return <span className={`engine-brand-icon engine-brand-icon--${engine}`} style={{ width: size, height: size }} aria-hidden="true" />
+}
+
+function ShortcutContextMenuButton({ shortcut, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { shortcut: number | 'Del' }) {
+  return <button {...props} type="button" role="menuitem" data-context-menu-key={shortcut}>
+    {children}<kbd className="context-menu-shortcut" aria-hidden="true">{shortcut}</kbd>
+  </button>
+}
+
+function useContextMenuShortcuts(menuRef: RefObject<HTMLDivElement | null>, activeMenu: object | null) {
+  useEffect(() => {
+    if (!activeMenu) return
+    menuRef.current?.focus({ preventScroll: true })
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.repeat) return
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229
+        || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('input, textarea, select, [contenteditable], [role="textbox"]')) return
+      const shortcut = event.key === 'Delete' ? 'Del' : /^[0-9]$/.test(event.key) ? event.key : null
+      if (!shortcut) return
+      const menu = menuRef.current
+      if (!menu?.isConnected) return
+      const button = [...menu.querySelectorAll<HTMLButtonElement>('button[data-context-menu-key]')]
+        .find((item) => item.dataset.contextMenuKey === shortcut)
+      if (!button) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (!button.disabled) button.click()
+    }
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [activeMenu, menuRef])
 }
 
 type PixelThemeIconName = 'theme' | 'display' | 'chat' | 'notification' | 'about'
@@ -952,6 +986,7 @@ type QueuedMessageEditPreferences = Pick<ComposerSendInput, 'model' | 'effort' |
 type QueuedMessageEditInput = Pick<ComposerSendInput, 'prompt' | 'images' | 'documents' | 'model' | 'effort' | 'claudeModel' | 'claudeEffort'>
 
 interface ComposerHandle {
+  focusInput(): void
   replaceDraft(value: string): void
   appendReplyDraft(value: string): boolean
   appendDraft(value: string, focus?: boolean): void
@@ -1406,6 +1441,13 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
   }, [onEndQueuedEdit])
 
   useImperativeHandle(ref, () => ({
+    focusInput() {
+      const textarea = composer.current
+      if (!textarea) return
+      textarea.focus({ preventScroll: true })
+      const cursor = textarea.value.length
+      textarea.setSelectionRange(cursor, cursor)
+    },
     replaceDraft(value) {
       updateDraft(value)
       window.requestAnimationFrame(() => composer.current?.focus({ preventScroll: true }))
@@ -2008,7 +2050,7 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
   function handleInputKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Enter is commonly used to confirm Chinese/Japanese/Korean IME candidates.
     if (inputIsComposing.current || event.nativeEvent.isComposing || event.keyCode === 229) return
-    if (event.key !== 'Enter' || event.shiftKey || !canSend) return
+    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || !canSend) return
     event.preventDefault()
     event.currentTarget.form?.requestSubmit()
   }
@@ -2043,21 +2085,28 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
     const clipboardFiles = directFiles.length > 0 ? directFiles : itemFiles
     const fileImages = clipboardFiles.filter(isImageAttachmentFile)
     const fileDocuments = clipboardFiles.filter(isSvgDocumentFile)
-    const embeddedImages = embeddedImageFilesFromClipboardHtml(html)
+    const { text: copiedMessageText, images: embeddedImages } = richMessageContentFromClipboardHtml(html)
     const images = embeddedImages.length > fileImages.length ? embeddedImages : fileImages
     if (images.length > 0 || fileDocuments.length > 0) {
       event.preventDefault()
       if (images.length > 0) void attachImages(images)
       if (fileDocuments.length > 0) void attachDocuments(fileDocuments)
-      const labels = embeddedImages.map((image) => `[图片：${image.name}]`).join('\n\n')
-      const text = labels && pastedText === labels
+      const labels = images.map((image) => `[图片：${image.name}]`).join('\n\n')
+      const plainText = labels && pastedText === labels
         ? ''
         : labels && pastedText.endsWith(`\n\n${labels}`)
           ? pastedText.slice(0, -(labels.length + 2))
           : pastedText
+      const text = copiedMessageText ?? recoverCopiedMessageTextFromImagePaste(pastedText, images) ?? plainText
       const value = pastedTable ?? text
       if (pastedTable && value.length >= longPasteThreshold) appendDocument({ name: 'pasted-table.md', content: value })
       else if (value) insertPastedText(value, Boolean(pastedTable))
+      return
+    }
+    if (copiedMessageText !== null) {
+      event.preventDefault()
+      if (copiedMessageText.length >= longPasteThreshold) appendDocument({ name: 'pasted-content.md', content: copiedMessageText })
+      else if (copiedMessageText) insertPastedText(copiedMessageText, false)
       return
     }
     if (pastedTable) {
@@ -2277,6 +2326,7 @@ const MessageComposer = memo(forwardRef<ComposerHandle, MessageComposerProps>(fu
         <button className="composer-resize" type="button" onPointerDown={startComposerResize} aria-label="调整输入框高度" title="上下拖动调整输入框高度"><ChevronsUpDown size={14} /></button>
         <textarea
           ref={composer}
+          data-chat-composer
           value={draft}
           onChange={(event) => updateDraft(event.target.value)}
           onCompositionStart={() => { inputIsComposing.current = true }}
@@ -2539,6 +2589,7 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
   const [selectionContextMenu, setSelectionContextMenu] = useState<WorkspaceSelectionContextMenu | null>(null)
   const selectionContextMenuElement = useRef<HTMLDivElement>(null)
   const contextMenuElement = useRef<HTMLDivElement>(null)
+  useContextMenuShortcuts(contextMenuElement, contextMenu)
   const [workspaceClipboard, setWorkspaceClipboard] = useState<WorkspaceClipboard | null>(null)
   const [mutationDialog, setMutationDialog] = useState<WorkspaceMutationDialog | null>(null)
   const [mutationSaving, setMutationSaving] = useState(false)
@@ -3441,6 +3492,11 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
   const contextMenuCanDelete = Boolean(contextMenu && !contextMenu.root && contextMenu.paths.length > 0)
   const contextMenuHasQuickActions = contextMenuCanBind || contextMenuCanOpenTerminal || contextMenuCanRunInTerminal || contextMenuMissingDraftPaths.length > 0
   const contextMenuHasFileActions = contextMenuCanRename || contextMenuCanCopy || contextMenuCanCut || contextMenuCanDownload || contextMenuCanPaste || contextMenuCanUpload
+  let contextMenuShortcut = 0
+  const nextContextMenuShortcut = () => {
+    contextMenuShortcut += 1
+    return contextMenuShortcut === 10 ? 0 : contextMenuShortcut
+  }
   const uploadPercent = uploadProgress
     ? uploadProgress.size > 0
       ? Math.min(100, Math.floor(uploadProgress.loaded / uploadProgress.size * 100))
@@ -3609,30 +3665,30 @@ const WorkspaceExplorer = memo(function WorkspaceExplorer({ token, eyebrow = '�
         previewPortalTarget,
       ) : null}
       {contextMenu && typeof document !== 'undefined' ? createPortal(
-        <div ref={contextMenuElement} className={`thread-context-menu workspace-file-context-menu${theme === 'retro' ? ' workspace-file-context-menu--retro' : ''} remote-shell--theme-${theme}${theme === 'light' ? ' workspace-file-context-menu--light' : ''}`} style={{ ...portalThemeStyle, left: contextMenu.x, top: contextMenu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()} onPaste={handleWorkspacePaste}>
+        <div ref={contextMenuElement} className={`thread-context-menu workspace-file-context-menu${theme === 'retro' ? ' workspace-file-context-menu--retro' : ''} remote-shell--theme-${theme}${theme === 'light' ? ' workspace-file-context-menu--light' : ''}`} style={{ ...portalThemeStyle, left: contextMenu.x, top: contextMenu.y }} role="menu" tabIndex={-1} onPointerDown={(event) => event.stopPropagation()} onPaste={handleWorkspacePaste}>
           <div className="workspace-file-context-menu__name" title={contextMenu.entry.path}>{contextMenu.entry.name}{contextMenu.paths.length > 1 ? ` · 已选 ${contextMenu.paths.length} 项` : ''}</div>
           {contextMenuHasQuickActions ? <div className="workspace-file-context-menu__group workspace-file-context-menu__group--primary">
             <span className="workspace-file-context-menu__group-label">快捷操作</span>
-            {contextMenuCanBind ? <button type="button" role="menuitem" disabled={!canBindThreadWorkspace} onClick={() => void bindDirectoryToCurrentThread()}><FolderOpen size={14} />绑定当前聊天到此目录</button> : null}
-            {contextMenuCanOpenTerminal ? <button type="button" role="menuitem" onClick={() => { const path = workspaceAbsolutePath(browsingRoot, contextMenu.entry.path); setContextMenu(null); onAddToTerminal(path) }}><TerminalIcon size={14} />添加到终端</button> : null}
-            {contextMenuCanRunInTerminal ? <button type="button" role="menuitem" onClick={() => { const path = workspaceAbsolutePath(browsingRoot, contextMenu.entry.path); setContextMenu(null); onRunInTerminal(path) }}><Play size={14} />终端运行</button> : null}
-            {contextMenuMissingDraftPaths.length > 0 ? <button type="button" role="menuitem" onClick={() => { setContextMenu(null); onInsertPath(contextMenuMissingDraftPaths.join('\n'), !mobileOpen) }}><EngineBrandIcon engine={engine} size={14} />加入输入框</button> : null}
+            {contextMenuCanBind ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} disabled={!canBindThreadWorkspace} onClick={() => void bindDirectoryToCurrentThread()}><FolderOpen size={14} />绑定当前聊天到此目录</ShortcutContextMenuButton> : null}
+            {contextMenuCanOpenTerminal ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => { const path = workspaceAbsolutePath(browsingRoot, contextMenu.entry.path); setContextMenu(null); onAddToTerminal(path) }}><TerminalIcon size={14} />添加到终端</ShortcutContextMenuButton> : null}
+            {contextMenuCanRunInTerminal ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => { const path = workspaceAbsolutePath(browsingRoot, contextMenu.entry.path); setContextMenu(null); onRunInTerminal(path) }}><Play size={14} />终端运行</ShortcutContextMenuButton> : null}
+            {contextMenuMissingDraftPaths.length > 0 ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => { setContextMenu(null); onInsertPath(contextMenuMissingDraftPaths.join('\n'), !mobileOpen) }}><EngineBrandIcon engine={engine} size={14} />加入输入框</ShortcutContextMenuButton> : null}
           </div> : null}
           {contextMenuCanCreate ? <div className="workspace-file-context-menu__group workspace-file-context-menu__group--create">
             <span className="workspace-file-context-menu__group-label">新建</span>
-            <button type="button" role="menuitem" onClick={() => startWorkspaceCreate('file')}><FilePlus2 size={14} />新建文件</button>
-            <button type="button" role="menuitem" onClick={() => startWorkspaceCreate('directory')}><FolderPlus size={14} />新建文件夹</button>
+            <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => startWorkspaceCreate('file')}><FilePlus2 size={14} />新建文件</ShortcutContextMenuButton>
+            <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => startWorkspaceCreate('directory')}><FolderPlus size={14} />新建文件夹</ShortcutContextMenuButton>
           </div> : null}
           {contextMenuHasFileActions ? <div className="workspace-file-context-menu__group workspace-file-context-menu__group--manage">
             <span className="workspace-file-context-menu__group-label">文件操作</span>
-            {contextMenuCanRename ? <button type="button" role="menuitem" onClick={startWorkspaceRename}><Pencil size={14} />重命名</button> : null}
-            {contextMenuCanCopy ? <button type="button" role="menuitem" onClick={() => rememberWorkspaceEntries('copy')}><Copy size={14} />复制{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</button> : null}
-            {contextMenuCanCut ? <button type="button" role="menuitem" onClick={() => rememberWorkspaceEntries('move')}><Scissors size={14} />剪切{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</button> : null}
-            {contextMenuCanDownload ? <button type="button" role="menuitem" onClick={() => void downloadWorkspaceFile()}><Download size={14} />文件下载</button> : null}
-            {contextMenuCanPaste ? <button type="button" role="menuitem" onClick={() => void pasteWorkspaceEntries()}><ClipboardPaste size={14} />粘贴到此处</button> : null}
-            {contextMenuCanUpload ? <button type="button" role="menuitem" disabled={Boolean(uploadProgress)} onClick={() => chooseWorkspaceUpload(contextMenu.entry.path)}><Upload size={14} />上传文件</button> : null}
+            {contextMenuCanRename ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={startWorkspaceRename}><Pencil size={14} />重命名</ShortcutContextMenuButton> : null}
+            {contextMenuCanCopy ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => rememberWorkspaceEntries('copy')}><Copy size={14} />复制{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</ShortcutContextMenuButton> : null}
+            {contextMenuCanCut ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => rememberWorkspaceEntries('move')}><Scissors size={14} />剪切{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</ShortcutContextMenuButton> : null}
+            {contextMenuCanDownload ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => void downloadWorkspaceFile()}><Download size={14} />文件下载</ShortcutContextMenuButton> : null}
+            {contextMenuCanPaste ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} onClick={() => void pasteWorkspaceEntries()}><ClipboardPaste size={14} />粘贴到此处</ShortcutContextMenuButton> : null}
+            {contextMenuCanUpload ? <ShortcutContextMenuButton shortcut={nextContextMenuShortcut()} disabled={Boolean(uploadProgress)} onClick={() => chooseWorkspaceUpload(contextMenu.entry.path)}><Upload size={14} />上传文件</ShortcutContextMenuButton> : null}
           </div> : null}
-          {contextMenuCanDelete ? <button className="thread-context-menu__danger workspace-file-context-menu__delete" type="button" role="menuitem" onClick={startWorkspaceDelete}><Trash2 size={14} />删除{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</button> : null}
+          {contextMenuCanDelete ? <ShortcutContextMenuButton shortcut="Del" className="thread-context-menu__danger workspace-file-context-menu__delete" onClick={startWorkspaceDelete}><Trash2 size={14} />删除{contextMenu.paths.length > 1 ? ` ${contextMenu.paths.length} 项` : ''}</ShortcutContextMenuButton> : null}
         </div>,
         document.body,
       ) : null}
@@ -4484,6 +4540,8 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
   const [completionToast, setCompletionToast] = useState<CodexThreadCompletion | null>(null)
   const [paneNotice, setPaneNotice] = useState<string | null>(null)
   const [threadContextMenu, setThreadContextMenu] = useState<{ thread: CodexThread; x: number; y: number } | null>(null)
+  const threadContextMenuElement = useRef<HTMLDivElement>(null)
+  useContextMenuShortcuts(threadContextMenuElement, threadContextMenu)
   const [pinnedThreadIds, setPinnedThreadIds] = useState<Set<string>>(readPinnedThreadIds)
   const [scheduledThreadIds, setScheduledThreadIds] = useState<Set<string>>(() => new Set())
   const [threadContextAction, setThreadContextAction] = useState<{ threadId: string; type: 'export' | 'quote' } | null>(null)
@@ -4572,6 +4630,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
     setCpaUsageSettings(nextSettings)
   }, [])
   const composerHandle = useRef<ComposerHandle>(null)
+  const focusComposerAfterThreadSwitch = useRef<string | null>(null)
   const sidebarTouchStart = useRef<MobilePanelGestureStart | null>(null)
   const sidebarDrag = useRef<{ panelWidth: number; offset: number; active: boolean } | null>(null)
   const workspaceDrag = useRef<{ panelWidth: number; offset: number; active: boolean } | null>(null)
@@ -4984,6 +5043,11 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
 
   const activeThreadId = activeRemote.activeThread?.id
   const composerDraftScope = composerDraftScopeForThread(activeThreadId)
+  useLayoutEffect(() => {
+    if (!activeThreadId || focusComposerAfterThreadSwitch.current !== activeThreadId) return
+    focusComposerAfterThreadSwitch.current = null
+    composerHandle.current?.focusInput()
+  }, [activeThreadId])
   const activeWorkspaceDraft = workspaceDraftSnapshot?.scope === composerDraftScope
     ? workspaceDraftSnapshot.draft
     : readComposerDraft(composerDraftScope)
@@ -5517,7 +5581,8 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
     await createThreadForPane(selectedPaneIndex)
   }
 
-  async function selectThread(thread: CodexThread, options?: SelectThreadOptions) {
+  async function selectThread(thread: CodexThread, options?: SelectThreadOptions, focusComposer = false) {
+    focusComposerAfterThreadSwitch.current = focusComposer ? thread.id : null
     setSidebarOpen(false)
     setThreadContextMenu(null)
     const existingPane = paneIndexForThread(thread.id)
@@ -5852,7 +5917,8 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
         || threadContextMenu || threadRenameTarget || threadDeleteTargets || workspacePreviewModeRef.current !== null) return
 
       const target = event.target instanceof HTMLElement ? event.target : null
-      if (target?.isContentEditable || target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) return
+      const editableTarget = target?.closest('input, textarea, select, [contenteditable], [role="textbox"]')
+      if (editableTarget && !editableTarget.matches('textarea[data-chat-composer]')) return
       if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return
 
       const threads = groupedSidebarThreads.flatMap((section) => section.threads)
@@ -5865,7 +5931,7 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
       const nextThread = threads[nextIndex]
 
       event.preventDefault()
-      if (nextThread.id !== activeRemote.activeThread?.id) void selectThread(nextThread)
+      if (nextThread.id !== activeRemote.activeThread?.id) void selectThread(nextThread, undefined, true)
     }
 
     document.addEventListener('keydown', switchSidebarThread)
@@ -6034,13 +6100,13 @@ export function CodexRemotePage({ token, onUnauthorized, onUnpair, themePreferen
       <button className={'sidebar-backdrop' + (sidebarBackdropVisible ? ' sidebar-backdrop--visible' : '') + (sidebarDragging ? ' sidebar-backdrop--dragging' : '')} type="button" aria-label="关闭侧栏" aria-hidden={!sidebarBackdropVisible} tabIndex={sidebarBackdropVisible ? 0 : -1} onClick={() => setSidebarOpen(false)} />
       {workspaceOpen || workspaceDragging ? <button className="workspace-backdrop" type="button" aria-label="关闭文件树" onClick={() => setWorkspaceOpen(false)} /> : null}
       {threadContextMenu ? (
-        <div className="thread-context-menu" style={{ left: threadContextMenu.x, top: threadContextMenu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>
-          <button type="button" role="menuitem" onClick={() => { const thread = threadContextMenu.thread; setThreadContextMenu(null); void openConcurrentThread(thread) }}><MessagesSquare size={14} />并发打开</button>
-          <button type="button" role="menuitem" onClick={() => void toggleThreadPin(threadContextMenu.thread)}>{pinnedThreadIds.has(threadContextMenu.thread.id) ? <PinOff size={14} /> : <Pin size={14} />}{pinnedThreadIds.has(threadContextMenu.thread.id) ? '取消置顶' : '置顶'}</button>
-          <button type="button" role="menuitem" disabled={threadContextAction !== null} onClick={() => void exportThread(threadContextMenu.thread)}>{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'export' ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'export' ? '导出中…' : '导出'}</button>
-          <button type="button" role="menuitem" disabled={threadContextAction !== null} onClick={() => void quoteThread(threadContextMenu.thread)}>{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'quote' ? <LoaderCircle className="spin" size={14} /> : <Quote size={14} />}{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'quote' ? '引用中…' : '引用'}</button>
-          <button type="button" role="menuitem" onClick={() => startThreadRename(threadContextMenu.thread)}><Pencil size={14} />重命名</button>
-          <button className="thread-context-menu__danger" type="button" role="menuitem" disabled={threadContextAction !== null} onClick={() => startThreadDelete(threadContextMenu.thread)}><Trash2 size={14} />删除聊天</button>
+        <div ref={threadContextMenuElement} className="thread-context-menu" style={{ left: threadContextMenu.x, top: threadContextMenu.y }} role="menu" tabIndex={-1} onPointerDown={(event) => event.stopPropagation()}>
+          <ShortcutContextMenuButton shortcut={1} onClick={() => { const thread = threadContextMenu.thread; setThreadContextMenu(null); void openConcurrentThread(thread) }}><MessagesSquare size={14} />并发打开</ShortcutContextMenuButton>
+          <ShortcutContextMenuButton shortcut={2} onClick={() => void toggleThreadPin(threadContextMenu.thread)}>{pinnedThreadIds.has(threadContextMenu.thread.id) ? <PinOff size={14} /> : <Pin size={14} />}{pinnedThreadIds.has(threadContextMenu.thread.id) ? '取消置顶' : '置顶'}</ShortcutContextMenuButton>
+          <ShortcutContextMenuButton shortcut={3} disabled={threadContextAction !== null} onClick={() => void exportThread(threadContextMenu.thread)}>{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'export' ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'export' ? '导出中…' : '导出'}</ShortcutContextMenuButton>
+          <ShortcutContextMenuButton shortcut={4} disabled={threadContextAction !== null} onClick={() => void quoteThread(threadContextMenu.thread)}>{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'quote' ? <LoaderCircle className="spin" size={14} /> : <Quote size={14} />}{threadContextAction?.threadId === threadContextMenu.thread.id && threadContextAction.type === 'quote' ? '引用中…' : '引用'}</ShortcutContextMenuButton>
+          <ShortcutContextMenuButton shortcut={5} onClick={() => startThreadRename(threadContextMenu.thread)}><Pencil size={14} />重命名</ShortcutContextMenuButton>
+          <ShortcutContextMenuButton shortcut="Del" className="thread-context-menu__danger" disabled={threadContextAction !== null} onClick={() => startThreadDelete(threadContextMenu.thread)}><Trash2 size={14} />删除聊天</ShortcutContextMenuButton>
         </div>
       ) : null}
 
